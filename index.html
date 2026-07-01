@@ -132,28 +132,24 @@ function getWeekGrid(currentDate) {
 }
 // 2026년 대한민국 법정 공휴일 (대체공휴일 포함). 다음 해로 넘어가면 공휴일 관리에서 직접 갱신해 주세요.
 const KOREA_HOLIDAYS_2026 = [
-  { date: "2026-01-01", name: "신정" },
-  { date: "2026-02-16", name: "설날 연휴" },
-  { date: "2026-02-17", name: "설날" },
-  { date: "2026-02-18", name: "설날 연휴" },
-  { date: "2026-03-01", name: "삼일절" },
-  { date: "2026-03-02", name: "대체공휴일(삼일절)" },
-  { date: "2026-05-01", name: "근로자의 날" },
-  { date: "2026-05-05", name: "어린이날" },
-  { date: "2026-05-24", name: "부처님오신날" },
-  { date: "2026-05-25", name: "대체공휴일(부처님오신날)" },
-  { date: "2026-06-03", name: "전국동시지방선거일" },
-  { date: "2026-06-06", name: "현충일" },
-  { date: "2026-07-17", name: "제헌절" },
-  { date: "2026-08-15", name: "광복절" },
-  { date: "2026-08-17", name: "대체공휴일(광복절)" },
-  { date: "2026-09-24", name: "추석 연휴" },
-  { date: "2026-09-25", name: "추석" },
-  { date: "2026-09-26", name: "추석 연휴" },
-  { date: "2026-10-03", name: "개천절" },
-  { date: "2026-10-05", name: "대체공휴일(개천절)" },
-  { date: "2026-10-09", name: "한글날" },
-  { date: "2026-12-25", name: "크리스마스" },
+  { startDate: "2026-01-01", endDate: "2026-01-01", name: "신정" },
+  { startDate: "2026-02-16", endDate: "2026-02-18", name: "설날 연휴" },
+  { startDate: "2026-03-01", endDate: "2026-03-01", name: "삼일절" },
+  { startDate: "2026-03-02", endDate: "2026-03-02", name: "대체공휴일(삼일절)" },
+  { startDate: "2026-05-01", endDate: "2026-05-01", name: "근로자의 날" },
+  { startDate: "2026-05-05", endDate: "2026-05-05", name: "어린이날" },
+  { startDate: "2026-05-24", endDate: "2026-05-24", name: "부처님오신날" },
+  { startDate: "2026-05-25", endDate: "2026-05-25", name: "대체공휴일(부처님오신날)" },
+  { startDate: "2026-06-03", endDate: "2026-06-03", name: "전국동시지방선거일" },
+  { startDate: "2026-06-06", endDate: "2026-06-06", name: "현충일" },
+  { startDate: "2026-07-17", endDate: "2026-07-17", name: "제헌절" },
+  { startDate: "2026-08-15", endDate: "2026-08-15", name: "광복절" },
+  { startDate: "2026-08-17", endDate: "2026-08-17", name: "대체공휴일(광복절)" },
+  { startDate: "2026-09-24", endDate: "2026-09-26", name: "추석 연휴" },
+  { startDate: "2026-10-03", endDate: "2026-10-03", name: "개천절" },
+  { startDate: "2026-10-05", endDate: "2026-10-05", name: "대체공휴일(개천절)" },
+  { startDate: "2026-10-09", endDate: "2026-10-09", name: "한글날" },
+  { startDate: "2026-12-25", endDate: "2026-12-25", name: "크리스마스" },
 ];
 
 function seedData() {
@@ -163,11 +159,11 @@ function seedData() {
   const m3 = { id: genId("mem"), name: "박도윤", annualTotal: 12 };
   const members = [m1, m2, m3];
   const schedules = [
-    { id: genId("sch"), memberId: m1.id, date: toKey(addDays(today, 1)), type: "연차", note: "개인 사유", isHolidayWork: false },
-    { id: genId("sch"), memberId: m2.id, date: toKey(addDays(today, 1)), type: "반차", note: "오전 반차", isHolidayWork: false },
-    { id: genId("sch"), memberId: m3.id, date: toKey(addDays(today, 3)), type: "외부일정", note: "거래처 미팅", isHolidayWork: false },
-    { id: genId("sch"), memberId: m1.id, date: toKey(addDays(today, 5)), type: "대체휴무", note: "지난주 토요일 근무 대체", isHolidayWork: true },
-    { id: genId("sch"), memberId: m2.id, date: toKey(addDays(today, -2)), type: "휴무", note: "", isHolidayWork: false },
+    { id: genId("sch"), memberId: m1.id, startDate: toKey(addDays(today, 1)), endDate: toKey(addDays(today, 1)), type: "연차", note: "개인 사유", isHolidayWork: false },
+    { id: genId("sch"), memberId: m2.id, startDate: toKey(addDays(today, 1)), endDate: toKey(addDays(today, 1)), type: "반차", note: "오전 반차", isHolidayWork: false },
+    { id: genId("sch"), memberId: m3.id, startDate: toKey(addDays(today, 3)), endDate: toKey(addDays(today, 3)), type: "외부일정", note: "거래처 미팅", isHolidayWork: false },
+    { id: genId("sch"), memberId: m1.id, startDate: toKey(addDays(today, 5)), endDate: toKey(addDays(today, 6)), type: "연차", note: "여행", isHolidayWork: false },
+    { id: genId("sch"), memberId: m2.id, startDate: toKey(addDays(today, -2)), endDate: toKey(addDays(today, -2)), type: "휴무", note: "", isHolidayWork: false },
   ];
   const companyEvents = [
     { id: genId("evt"), title: "전체 워크샵", startDate: toKey(addDays(today, 7)), endDate: toKey(addDays(today, 8)), note: "전 직원 참석" },
@@ -510,37 +506,50 @@ function MemberManager({ members, onAdd, onUpdate, onDelete }) {
 }
 
 function HolidayManager({ holidays, onAdd, onDelete }) {
-  const [date, setDate] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
   const [name, setName] = useState("");
 
   const submit = () => {
-    if (!date || !name.trim()) return;
-    onAdd({ date, name: name.trim() });
-    setDate("");
+    if (!startDate || !name.trim()) return;
+    const end = endDate && endDate >= startDate ? endDate : startDate;
+    onAdd({ startDate, endDate: end, name: name.trim() });
+    setStartDate("");
+    setEndDate("");
     setName("");
   };
 
-  const sorted = [...holidays].sort((a, b) => a.date.localeCompare(b.date));
+  const sorted = [...holidays].sort((a, b) => (a.startDate || a.date).localeCompare(b.startDate || b.date));
 
   return (
     <div className="bg-white border rounded-lg p-4" style={{ borderColor: "#EEF0F3" }}>
       <h3 className="text-sm font-bold mb-3" style={{ color: "#111827" }}>공휴일 관리</h3>
       <div className="space-y-1 mb-3 overflow-y-auto" style={{ maxHeight: 180 }}>
         {sorted.length === 0 && <p className="text-xs" style={{ color: "#9CA3AF" }}>등록된 공휴일이 없습니다.</p>}
-        {sorted.map((h) => (
-          <div key={h.id} className="flex items-center justify-between text-xs py-1">
-            <span>
-              <span style={{ fontFamily: FONT_MONO, color: "#9CA3AF" }}>{h.date}</span>{" "}
-              <span style={{ color: "#DC2626", fontWeight: 600 }}>{h.name}</span>
-            </span>
-            <button onClick={() => onDelete(h.id)}><Trash2 size={12} color="#9CA3AF" /></button>
-          </div>
-        ))}
+        {sorted.map((h) => {
+          const s = h.startDate || h.date;
+          const e = h.endDate || h.startDate || h.date;
+          return (
+            <div key={h.id} className="flex items-center justify-between text-xs py-1">
+              <span>
+                <span style={{ fontFamily: FONT_MONO, color: "#9CA3AF" }}>{s === e ? s : `${s} ~ ${e}`}</span>{" "}
+                <span style={{ color: "#DC2626", fontWeight: 600 }}>{h.name}</span>
+              </span>
+              <button onClick={() => onDelete(h.id)}><Trash2 size={12} color="#9CA3AF" /></button>
+            </div>
+          );
+        })}
       </div>
-      <div className="flex items-center gap-1.5 pt-2 border-t" style={{ borderColor: "#F3F4F6" }}>
-        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", width: 130, fontFamily: FONT_MONO }} />
-        <input placeholder="공휴일명" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB" }} />
-        <button onClick={submit} className="text-xs font-semibold px-2 py-1.5 rounded text-white whitespace-nowrap" style={{ backgroundColor: ACCENT }}>추가</button>
+      <div className="space-y-1.5 pt-2 border-t" style={{ borderColor: "#F3F4F6" }}>
+        <div className="flex items-center gap-1.5">
+          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+          <span className="text-xs" style={{ color: "#9CA3AF" }}>~</span>
+          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <input placeholder="공휴일명" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB" }} />
+          <button onClick={submit} className="text-xs font-semibold px-2 py-1.5 rounded text-white whitespace-nowrap" style={{ backgroundColor: ACCENT }}>추가</button>
+        </div>
       </div>
     </div>
   );
@@ -548,9 +557,11 @@ function HolidayManager({ holidays, onAdd, onDelete }) {
 
 function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDate, onSaveSchedule, onDeleteSchedule, onSaveCompanyEvent, onDeleteCompanyEvent, onQuickAddMember }) {
   const [mode, setMode] = useState("personal"); // "personal" | "company"
+  // shared date range (used by both modes)
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
   // personal schedule fields
   const [memberId, setMemberId] = useState("");
-  const [date, setDate] = useState("");
   const [type, setType] = useState("연차");
   const [note, setNote] = useState("");
   const [isHolidayWork, setIsHolidayWork] = useState(false);
@@ -559,8 +570,6 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
   const [showQuickAdd, setShowQuickAdd] = useState(false);
   // company event fields
   const [title, setTitle] = useState("");
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
   const [companyNote, setCompanyNote] = useState("");
 
   useEffect(() => {
@@ -574,20 +583,21 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
     } else if (initial && initialKind === "schedule") {
       setMode("personal");
       setMemberId(initial.memberId);
-      setDate(initial.date);
+      setStartDate(initial.startDate || initial.date);
+      setEndDate(initial.endDate || initial.startDate || initial.date);
       setType(initial.type);
       setNote(initial.note || "");
       setIsHolidayWork(!!initial.isHolidayWork);
     } else {
       setMode("personal");
       setMemberId(members[0]?.id || "");
-      setDate(defaultDate || toKey(new Date()));
+      const d = defaultDate || toKey(new Date());
+      setStartDate(d);
+      setEndDate(d);
       setType("연차");
       setNote("");
       setIsHolidayWork(false);
       setTitle("");
-      setStartDate(defaultDate || toKey(new Date()));
-      setEndDate(defaultDate || toKey(new Date()));
       setCompanyNote("");
     }
     setShowQuickAdd(false);
@@ -597,11 +607,13 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
   const isEditing = !!initial;
 
   const submitPersonal = () => {
-    if (!memberId || !date) return;
+    if (!memberId || !startDate) return;
+    const end = endDate && endDate >= startDate ? endDate : startDate;
     onSaveSchedule({
       id: initial?.id || genId("sch"),
       memberId,
-      date,
+      startDate,
+      endDate: end,
       type,
       note: note.trim(),
       isHolidayWork: type === "대체휴무" ? isHolidayWork : false,
@@ -679,9 +691,15 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
               )}
             </div>
 
-            <div>
-              <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>날짜</label>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>시작일</label>
+                <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+              </div>
+              <div>
+                <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>종료일</label>
+                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+              </div>
             </div>
 
             <div>
@@ -773,7 +791,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
           <div className="flex items-center gap-2">
             <button onClick={onClose} className="text-xs font-semibold px-3 py-2 rounded border" style={{ borderColor: "#E5E7EB", color: "#374151" }}>취소</button>
             {mode === "personal" ? (
-              <button onClick={submitPersonal} disabled={!memberId} className="text-xs font-semibold px-3 py-2 rounded text-white disabled:opacity-40" style={{ backgroundColor: ACCENT }}>저장</button>
+              <button onClick={submitPersonal} disabled={!memberId || !startDate} className="text-xs font-semibold px-3 py-2 rounded text-white disabled:opacity-40" style={{ backgroundColor: ACCENT }}>저장</button>
             ) : (
               <button onClick={submitCompany} disabled={!title.trim() || !startDate} className="text-xs font-semibold px-3 py-2 rounded text-white disabled:opacity-40" style={{ backgroundColor: ACCENT }}>저장</button>
             )}
@@ -1001,8 +1019,18 @@ function App() {
       (s) => (filterMembers.size === 0 || filterMembers.has(s.memberId)) && (filterTypes.size === 0 || filterTypes.has(s.type))
     );
     filtered.forEach((s) => {
-      if (!map[s.date]) map[s.date] = [];
-      map[s.date].push(s);
+      const startKey = s.startDate || s.date;
+      const endKey = s.endDate || s.startDate || s.date;
+      let cursor = parseKey(startKey);
+      const end = parseKey(endKey);
+      let guard = 0;
+      while (cursor <= end && guard < 60) {
+        const k = toKey(cursor);
+        if (!map[k]) map[k] = [];
+        map[k].push(s);
+        cursor = addDays(cursor, 1);
+        guard++;
+      }
     });
     return map;
   }, [schedules, filterMembers, filterTypes]);
@@ -1027,7 +1055,16 @@ function App() {
   const holidayMap = useMemo(() => {
     const map = {};
     holidays.forEach((h) => {
-      map[h.date] = h.name;
+      const startKey = h.startDate || h.date;
+      const endKey = h.endDate || h.startDate || h.date;
+      let cursor = parseKey(startKey);
+      const end = parseKey(endKey);
+      let guard = 0;
+      while (cursor <= end && guard < 60) {
+        map[toKey(cursor)] = h.name;
+        cursor = addDays(cursor, 1);
+        guard++;
+      }
     });
     return map;
   }, [holidays]);
@@ -1156,13 +1193,20 @@ function App() {
 
   const exportCSV = () => {
     const header = ["날짜", "요일", "이름", "종류", "휴일근무대체", "메모"];
-    const scheduleRows = [...schedules]
-      .sort((a, b) => a.date.localeCompare(b.date))
-      .map((s) => {
-        const m = members.find((mm) => mm.id === s.memberId);
-        const d = parseKey(s.date);
-        return [s.date, WEEKDAYS[d.getDay()], m ? m.name : "(삭제됨)", s.type, s.type === "대체휴무" && s.isHolidayWork ? "Y" : "", (s.note || "").replace(/\r?\n/g, " ")];
-      });
+    const scheduleRows = [];
+    schedules.forEach((s) => {
+      const m = members.find((mm) => mm.id === s.memberId);
+      const startKey = s.startDate || s.date;
+      const endKey = s.endDate || s.startDate || s.date;
+      let cursor = parseKey(startKey);
+      const end = parseKey(endKey);
+      let guard = 0;
+      while (cursor <= end && guard < 60) {
+        scheduleRows.push([toKey(cursor), WEEKDAYS[cursor.getDay()], m ? m.name : "(삭제됨)", s.type, s.type === "대체휴무" && s.isHolidayWork ? "Y" : "", (s.note || "").replace(/\r?\n/g, " ")]);
+        cursor = addDays(cursor, 1);
+        guard++;
+      }
+    });
     const companyRows = [];
     companyEvents.forEach((ev) => {
       let cursor = parseKey(ev.startDate);
