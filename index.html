@@ -130,6 +130,32 @@ function getWeekGrid(currentDate) {
   const start = startOfWeek(currentDate);
   return Array.from({ length: 7 }, (_, i) => addDays(start, i));
 }
+// 2026년 대한민국 법정 공휴일 (대체공휴일 포함). 다음 해로 넘어가면 공휴일 관리에서 직접 갱신해 주세요.
+const KOREA_HOLIDAYS_2026 = [
+  { date: "2026-01-01", name: "신정" },
+  { date: "2026-02-16", name: "설날 연휴" },
+  { date: "2026-02-17", name: "설날" },
+  { date: "2026-02-18", name: "설날 연휴" },
+  { date: "2026-03-01", name: "삼일절" },
+  { date: "2026-03-02", name: "대체공휴일(삼일절)" },
+  { date: "2026-05-01", name: "근로자의 날" },
+  { date: "2026-05-05", name: "어린이날" },
+  { date: "2026-05-24", name: "부처님오신날" },
+  { date: "2026-05-25", name: "대체공휴일(부처님오신날)" },
+  { date: "2026-06-03", name: "전국동시지방선거일" },
+  { date: "2026-06-06", name: "현충일" },
+  { date: "2026-07-17", name: "제헌절" },
+  { date: "2026-08-15", name: "광복절" },
+  { date: "2026-08-17", name: "대체공휴일(광복절)" },
+  { date: "2026-09-24", name: "추석 연휴" },
+  { date: "2026-09-25", name: "추석" },
+  { date: "2026-09-26", name: "추석 연휴" },
+  { date: "2026-10-03", name: "개천절" },
+  { date: "2026-10-05", name: "대체공휴일(개천절)" },
+  { date: "2026-10-09", name: "한글날" },
+  { date: "2026-12-25", name: "크리스마스" },
+];
+
 function seedData() {
   const today = new Date();
   const m1 = { id: genId("mem"), name: "김민준", annualTotal: 15 };
@@ -143,7 +169,11 @@ function seedData() {
     { id: genId("sch"), memberId: m1.id, date: toKey(addDays(today, 5)), type: "대체휴무", note: "지난주 토요일 근무 대체", isHolidayWork: true },
     { id: genId("sch"), memberId: m2.id, date: toKey(addDays(today, -2)), type: "휴무", note: "", isHolidayWork: false },
   ];
-  return { members, schedules };
+  const companyEvents = [
+    { id: genId("evt"), title: "전체 워크샵", startDate: toKey(addDays(today, 7)), endDate: toKey(addDays(today, 8)), note: "전 직원 참석" },
+  ];
+  const holidays = KOREA_HOLIDAYS_2026.map((h) => ({ id: genId("hol"), ...h }));
+  return { members, schedules, companyEvents, holidays };
 }
 
 // ------------- style helpers -------------
@@ -170,6 +200,10 @@ function chipStyle(type, color) {
   }
 }
 
+function companyEventStyle() {
+  return { backgroundColor: ACCENT, color: "#fff", border: "1px solid transparent" };
+}
+
 // ------------- presentational pieces -------------
 function ScheduleChip({ schedule, member, onClick }) {
   const color = MEMBER_COLORS[hashColorIndex(member?.id || "x")];
@@ -191,6 +225,22 @@ function ScheduleChip({ schedule, member, onClick }) {
   );
 }
 
+function CompanyEventChip({ event, onClick }) {
+  return (
+    <div
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      title={event.note || event.title}
+      className="text-xs px-1.5 py-1 rounded mb-1 truncate cursor-pointer font-bold leading-tight hover:opacity-90"
+      style={companyEventStyle()}
+    >
+      📌 {event.title}
+    </div>
+  );
+}
+
 function Legend() {
   const neutral = { bg: "#475569", light: "#E2E8F0" };
   return (
@@ -202,23 +252,37 @@ function Legend() {
           <span>{t}</span>
         </div>
       ))}
+      <div className="flex items-center gap-1.5">
+        <span className="inline-block rounded" style={{ width: 22, height: 14, ...companyEventStyle() }} />
+        <span>회사 일정</span>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <span className="inline-block rounded-full" style={{ width: 8, height: 8, backgroundColor: "#DC2626" }} />
+        <span>공휴일</span>
+      </div>
     </div>
   );
 }
 
-function DayCell({ date, currentMonth, schedules, members, onAdd, onEditSchedule, onShowMore, tall }) {
+function DayCell({ date, currentMonth, schedules, companyEvents, holidayName, members, onAdd, onEditSchedule, onEditCompanyEvent, onShowMore, tall }) {
   const key = toKey(date);
   const inMonth = date.getMonth() === currentMonth;
   const today = isToday(date);
   const dow = date.getDay();
   const maxVisible = tall ? 8 : 3;
-  const visible = schedules.slice(0, maxVisible);
+  const remainingSlots = Math.max(0, maxVisible - companyEvents.length);
+  const visible = schedules.slice(0, remainingSlots);
   const hiddenCount = schedules.length - visible.length;
 
   let dateColor = "#374151";
   if (dow === 0) dateColor = "#DC2626";
   if (dow === 6) dateColor = "#2563EB";
+  if (holidayName) dateColor = "#DC2626";
   if (!inMonth) dateColor = "#D1D5DB";
+
+  let bgColor = "#fff";
+  if (holidayName) bgColor = "#FEF2F2";
+  if (today) bgColor = ACCENT_LIGHT;
 
   return (
     <div
@@ -226,15 +290,23 @@ function DayCell({ date, currentMonth, schedules, members, onAdd, onEditSchedule
       className="border cursor-pointer flex flex-col p-1.5 transition-colors hover:bg-gray-50"
       style={{
         minHeight: tall ? 260 : 108,
-        backgroundColor: today ? ACCENT_LIGHT : "#fff",
+        backgroundColor: bgColor,
         borderColor: today ? ACCENT : "#EEF0F3",
         opacity: inMonth ? 1 : 0.55,
       }}
     >
-      <div className="text-xs font-semibold mb-1 self-start px-1" style={{ fontFamily: FONT_MONO, color: dateColor }}>
-        {date.getDate()}
+      <div className="flex items-baseline justify-between gap-1 mb-1 px-1">
+        <span className="text-xs font-semibold" style={{ fontFamily: FONT_MONO, color: dateColor }}>
+          {date.getDate()}
+        </span>
+        {holidayName && (
+          <span className="text-[10px] font-semibold truncate" style={{ color: "#DC2626" }}>{holidayName}</span>
+        )}
       </div>
       <div className="flex-1 overflow-hidden">
+        {companyEvents.map((ev) => (
+          <CompanyEventChip key={ev.id} event={ev} onClick={() => onEditCompanyEvent(ev)} />
+        ))}
         {visible.map((s) => (
           <ScheduleChip key={s.id} schedule={s} member={members.find((m) => m.id === s.memberId)} onClick={() => onEditSchedule(s)} />
         ))}
@@ -255,7 +327,7 @@ function DayCell({ date, currentMonth, schedules, members, onAdd, onEditSchedule
   );
 }
 
-function MonthView({ currentDate, scheduleMap, members, onAdd, onEditSchedule, onShowMore }) {
+function MonthView({ currentDate, scheduleMap, companyEventMap, holidayMap, members, onAdd, onEditSchedule, onEditCompanyEvent, onShowMore }) {
   const days = useMemo(() => getMonthGrid(currentDate), [currentDate]);
   return (
     <div className="border rounded-lg overflow-hidden" style={{ borderColor: "#EEF0F3" }}>
@@ -275,9 +347,12 @@ function MonthView({ currentDate, scheduleMap, members, onAdd, onEditSchedule, o
               date={d}
               currentMonth={currentDate.getMonth()}
               schedules={scheduleMap[key] || []}
+              companyEvents={companyEventMap[key] || []}
+              holidayName={holidayMap[key]}
               members={members}
               onAdd={onAdd}
               onEditSchedule={onEditSchedule}
+              onEditCompanyEvent={onEditCompanyEvent}
               onShowMore={onShowMore}
             />
           );
@@ -287,7 +362,7 @@ function MonthView({ currentDate, scheduleMap, members, onAdd, onEditSchedule, o
   );
 }
 
-function WeekView({ currentDate, scheduleMap, members, onAdd, onEditSchedule, onShowMore }) {
+function WeekView({ currentDate, scheduleMap, companyEventMap, holidayMap, members, onAdd, onEditSchedule, onEditCompanyEvent, onShowMore }) {
   const days = useMemo(() => getWeekGrid(currentDate), [currentDate]);
   return (
     <div className="border rounded-lg overflow-hidden" style={{ borderColor: "#EEF0F3" }}>
@@ -307,9 +382,12 @@ function WeekView({ currentDate, scheduleMap, members, onAdd, onEditSchedule, on
               date={d}
               currentMonth={d.getMonth()}
               schedules={scheduleMap[key] || []}
+              companyEvents={companyEventMap[key] || []}
+              holidayName={holidayMap[key]}
               members={members}
               onAdd={onAdd}
               onEditSchedule={onEditSchedule}
+              onEditCompanyEvent={onEditCompanyEvent}
               onShowMore={onShowMore}
               tall
             />
@@ -431,7 +509,46 @@ function MemberManager({ members, onAdd, onUpdate, onDelete }) {
   );
 }
 
-function ScheduleModal({ open, onClose, members, initial, defaultDate, onSave, onDelete, onQuickAddMember }) {
+function HolidayManager({ holidays, onAdd, onDelete }) {
+  const [date, setDate] = useState("");
+  const [name, setName] = useState("");
+
+  const submit = () => {
+    if (!date || !name.trim()) return;
+    onAdd({ date, name: name.trim() });
+    setDate("");
+    setName("");
+  };
+
+  const sorted = [...holidays].sort((a, b) => a.date.localeCompare(b.date));
+
+  return (
+    <div className="bg-white border rounded-lg p-4" style={{ borderColor: "#EEF0F3" }}>
+      <h3 className="text-sm font-bold mb-3" style={{ color: "#111827" }}>공휴일 관리</h3>
+      <div className="space-y-1 mb-3 overflow-y-auto" style={{ maxHeight: 180 }}>
+        {sorted.length === 0 && <p className="text-xs" style={{ color: "#9CA3AF" }}>등록된 공휴일이 없습니다.</p>}
+        {sorted.map((h) => (
+          <div key={h.id} className="flex items-center justify-between text-xs py-1">
+            <span>
+              <span style={{ fontFamily: FONT_MONO, color: "#9CA3AF" }}>{h.date}</span>{" "}
+              <span style={{ color: "#DC2626", fontWeight: 600 }}>{h.name}</span>
+            </span>
+            <button onClick={() => onDelete(h.id)}><Trash2 size={12} color="#9CA3AF" /></button>
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center gap-1.5 pt-2 border-t" style={{ borderColor: "#F3F4F6" }}>
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", width: 130, fontFamily: FONT_MONO }} />
+        <input placeholder="공휴일명" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB" }} />
+        <button onClick={submit} className="text-xs font-semibold px-2 py-1.5 rounded text-white whitespace-nowrap" style={{ backgroundColor: ACCENT }}>추가</button>
+      </div>
+    </div>
+  );
+}
+
+function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDate, onSaveSchedule, onDeleteSchedule, onSaveCompanyEvent, onDeleteCompanyEvent, onQuickAddMember }) {
+  const [mode, setMode] = useState("personal"); // "personal" | "company"
+  // personal schedule fields
   const [memberId, setMemberId] = useState("");
   const [date, setDate] = useState("");
   const [type, setType] = useState("연차");
@@ -440,36 +557,65 @@ function ScheduleModal({ open, onClose, members, initial, defaultDate, onSave, o
   const [quickName, setQuickName] = useState("");
   const [quickTotal, setQuickTotal] = useState(15);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
+  // company event fields
+  const [title, setTitle] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [companyNote, setCompanyNote] = useState("");
 
   useEffect(() => {
     if (!open) return;
-    if (initial) {
+    if (initial && initialKind === "company") {
+      setMode("company");
+      setTitle(initial.title);
+      setStartDate(initial.startDate);
+      setEndDate(initial.endDate);
+      setCompanyNote(initial.note || "");
+    } else if (initial && initialKind === "schedule") {
+      setMode("personal");
       setMemberId(initial.memberId);
       setDate(initial.date);
       setType(initial.type);
       setNote(initial.note || "");
       setIsHolidayWork(!!initial.isHolidayWork);
     } else {
+      setMode("personal");
       setMemberId(members[0]?.id || "");
       setDate(defaultDate || toKey(new Date()));
       setType("연차");
       setNote("");
       setIsHolidayWork(false);
+      setTitle("");
+      setStartDate(defaultDate || toKey(new Date()));
+      setEndDate(defaultDate || toKey(new Date()));
+      setCompanyNote("");
     }
     setShowQuickAdd(false);
-  }, [open, initial, defaultDate]);
+  }, [open, initial, initialKind, defaultDate]);
 
   if (!open) return null;
+  const isEditing = !!initial;
 
-  const submit = () => {
+  const submitPersonal = () => {
     if (!memberId || !date) return;
-    onSave({
+    onSaveSchedule({
       id: initial?.id || genId("sch"),
       memberId,
       date,
       type,
       note: note.trim(),
       isHolidayWork: type === "대체휴무" ? isHolidayWork : false,
+    });
+  };
+  const submitCompany = () => {
+    if (!title.trim() || !startDate) return;
+    const end = endDate && endDate >= startDate ? endDate : startDate;
+    onSaveCompanyEvent({
+      id: initial?.id || genId("evt"),
+      title: title.trim(),
+      startDate,
+      endDate: end,
+      note: companyNote.trim(),
     });
   };
   const quickAdd = () => {
@@ -482,89 +628,155 @@ function ScheduleModal({ open, onClose, members, initial, defaultDate, onSave, o
 
   const needsNote = type === "연차" || type === "반차" || type === "대체휴무";
 
+  const modalTitle = isEditing ? (mode === "company" ? "회사 일정 수정" : "일정 수정") : "일정 추가";
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 overflow-y-auto" style={{ maxHeight: "90vh" }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-bold" style={{ color: "#111827" }}>{initial ? "일정 수정" : "일정 추가"}</h3>
+          <h3 className="text-base font-bold" style={{ color: "#111827" }}>{modalTitle}</h3>
           <button onClick={onClose}><X size={18} color="#9CA3AF" /></button>
         </div>
 
-        <div className="space-y-3">
-          <div>
-            <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>팀원</label>
-            {members.length === 0 || showQuickAdd ? (
-              <div className="flex items-center gap-1.5">
-                <input placeholder="이름" value={quickName} onChange={(e) => setQuickName(e.target.value)} className="flex-1 text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
-                <input type="number" placeholder="연차" value={quickTotal} onChange={(e) => setQuickTotal(e.target.value)} className="w-16 text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
-                <button onClick={quickAdd} className="text-xs font-semibold px-2 py-1.5 rounded text-white whitespace-nowrap" style={{ backgroundColor: ACCENT }}>추가</button>
+        {!isEditing && (
+          <div className="grid grid-cols-2 gap-1.5 mb-4">
+            <button
+              onClick={() => setMode("personal")}
+              className="text-xs font-semibold py-1.5 rounded border"
+              style={mode === "personal" ? { backgroundColor: ACCENT, borderColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", borderColor: "#E5E7EB", color: "#374151" }}
+            >
+              개인 일정
+            </button>
+            <button
+              onClick={() => setMode("company")}
+              className="text-xs font-semibold py-1.5 rounded border"
+              style={mode === "company" ? { backgroundColor: ACCENT, borderColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", borderColor: "#E5E7EB", color: "#374151" }}
+            >
+              회사 일정
+            </button>
+          </div>
+        )}
+
+        {mode === "personal" ? (
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>팀원</label>
+              {members.length === 0 || showQuickAdd ? (
+                <div className="flex items-center gap-1.5">
+                  <input placeholder="이름" value={quickName} onChange={(e) => setQuickName(e.target.value)} className="flex-1 text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
+                  <input type="number" placeholder="연차" value={quickTotal} onChange={(e) => setQuickTotal(e.target.value)} className="w-16 text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
+                  <button onClick={quickAdd} className="text-xs font-semibold px-2 py-1.5 rounded text-white whitespace-nowrap" style={{ backgroundColor: ACCENT }}>추가</button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <select value={memberId} onChange={(e) => setMemberId(e.target.value)} className="flex-1 text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }}>
+                    {members.map((m) => (
+                      <option key={m.id} value={m.id}>{m.name}</option>
+                    ))}
+                  </select>
+                  <button onClick={() => setShowQuickAdd(true)} className="text-xs font-semibold whitespace-nowrap" style={{ color: ACCENT }}>+ 새 팀원</button>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>날짜</label>
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold block mb-1.5" style={{ color: "#374151" }}>종류</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {LEAVE_TYPES.map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setType(t)}
+                    className="text-xs font-medium py-1.5 rounded border"
+                    style={type === t ? { backgroundColor: ACCENT, borderColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", borderColor: "#E5E7EB", color: "#374151" }}
+                  >
+                    {t}
+                  </button>
+                ))}
               </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <select value={memberId} onChange={(e) => setMemberId(e.target.value)} className="flex-1 text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }}>
-                  {members.map((m) => (
-                    <option key={m.id} value={m.id}>{m.name}</option>
-                  ))}
-                </select>
-                <button onClick={() => setShowQuickAdd(true)} className="text-xs font-semibold whitespace-nowrap" style={{ color: ACCENT }}>+ 새 팀원</button>
-              </div>
+            </div>
+
+            {type === "대체휴무" && (
+              <label className="flex items-center gap-2 text-xs" style={{ color: "#374151" }}>
+                <input type="checkbox" checked={isHolidayWork} onChange={(e) => setIsHolidayWork(e.target.checked)} />
+                휴일근무에 따른 대체
+              </label>
             )}
-          </div>
 
-          <div>
-            <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>날짜</label>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
-          </div>
-
-          <div>
-            <label className="text-xs font-semibold block mb-1.5" style={{ color: "#374151" }}>종류</label>
-            <div className="grid grid-cols-3 gap-1.5">
-              {LEAVE_TYPES.map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setType(t)}
-                  className="text-xs font-medium py-1.5 rounded border"
-                  style={type === t ? { backgroundColor: ACCENT, borderColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", borderColor: "#E5E7EB", color: "#374151" }}
-                >
-                  {t}
-                </button>
-              ))}
+            <div>
+              <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>
+                메모 {needsNote && <span style={{ color: "#DC2626" }}>*</span>}
+              </label>
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                rows={3}
+                placeholder={needsNote ? "세부 사유를 입력해 주세요" : "메모 (선택)"}
+                className="w-full text-sm border rounded px-2 py-1.5 resize-none"
+                style={{ borderColor: "#E5E7EB" }}
+              />
             </div>
           </div>
-
-          {type === "대체휴무" && (
-            <label className="flex items-center gap-2 text-xs" style={{ color: "#374151" }}>
-              <input type="checkbox" checked={isHolidayWork} onChange={(e) => setIsHolidayWork(e.target.checked)} />
-              휴일근무에 따른 대체
-            </label>
-          )}
-
-          <div>
-            <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>
-              메모 {needsNote && <span style={{ color: "#DC2626" }}>*</span>}
-            </label>
-            <textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              rows={3}
-              placeholder={needsNote ? "세부 사유를 입력해 주세요" : "메모 (선택)"}
-              className="w-full text-sm border rounded px-2 py-1.5 resize-none"
-              style={{ borderColor: "#E5E7EB" }}
-            />
+        ) : (
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>일정명</label>
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="예: 전체 워크샵, 창립기념일"
+                className="w-full text-sm border rounded px-2 py-1.5"
+                style={{ borderColor: "#E5E7EB" }}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>시작일</label>
+                <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+              </div>
+              <div>
+                <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>종료일</label>
+                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>메모</label>
+              <textarea
+                value={companyNote}
+                onChange={(e) => setCompanyNote(e.target.value)}
+                rows={3}
+                placeholder="세부 안내 (선택)"
+                className="w-full text-sm border rounded px-2 py-1.5 resize-none"
+                style={{ borderColor: "#E5E7EB" }}
+              />
+            </div>
           </div>
-        </div>
+        )}
 
         <div className="flex items-center justify-between mt-5">
           <div>
-            {initial && (
-              <button onClick={() => onDelete(initial.id)} className="text-xs font-semibold flex items-center gap-1" style={{ color: "#DC2626" }}>
+            {isEditing && mode === "personal" && (
+              <button onClick={() => onDeleteSchedule(initial.id)} className="text-xs font-semibold flex items-center gap-1" style={{ color: "#DC2626" }}>
+                <Trash2 size={14} /> 삭제
+              </button>
+            )}
+            {isEditing && mode === "company" && (
+              <button onClick={() => onDeleteCompanyEvent(initial.id)} className="text-xs font-semibold flex items-center gap-1" style={{ color: "#DC2626" }}>
                 <Trash2 size={14} /> 삭제
               </button>
             )}
           </div>
           <div className="flex items-center gap-2">
             <button onClick={onClose} className="text-xs font-semibold px-3 py-2 rounded border" style={{ borderColor: "#E5E7EB", color: "#374151" }}>취소</button>
-            <button onClick={submit} disabled={!memberId} className="text-xs font-semibold px-3 py-2 rounded text-white disabled:opacity-40" style={{ backgroundColor: ACCENT }}>저장</button>
+            {mode === "personal" ? (
+              <button onClick={submitPersonal} disabled={!memberId} className="text-xs font-semibold px-3 py-2 rounded text-white disabled:opacity-40" style={{ backgroundColor: ACCENT }}>저장</button>
+            ) : (
+              <button onClick={submitCompany} disabled={!title.trim() || !startDate} className="text-xs font-semibold px-3 py-2 rounded text-white disabled:opacity-40" style={{ backgroundColor: ACCENT }}>저장</button>
+            )}
           </div>
         </div>
       </div>
@@ -572,7 +784,7 @@ function ScheduleModal({ open, onClose, members, initial, defaultDate, onSave, o
   );
 }
 
-function DayDetailModal({ dateKey, schedules, members, onClose, onEdit, onAddNew }) {
+function DayDetailModal({ dateKey, schedules, companyEvents, members, onClose, onEdit, onEditCompanyEvent, onAddNew }) {
   if (!dateKey) return null;
   const d = parseKey(dateKey);
   return (
@@ -585,6 +797,9 @@ function DayDetailModal({ dateKey, schedules, members, onClose, onEdit, onAddNew
           <button onClick={onClose}><X size={18} color="#9CA3AF" /></button>
         </div>
         <div className="space-y-1 mb-3 overflow-y-auto" style={{ maxHeight: "50vh" }}>
+          {companyEvents.map((ev) => (
+            <CompanyEventChip key={ev.id} event={ev} onClick={() => onEditCompanyEvent(ev)} />
+          ))}
           {schedules.map((s) => (
             <ScheduleChip key={s.id} schedule={s} member={members.find((m) => m.id === s.memberId)} onClick={() => onEdit(s)} />
           ))}
@@ -731,12 +946,15 @@ function App() {
   const [loaded, setLoaded] = useState(false);
   const [members, setMembers] = useState([]);
   const [schedules, setSchedules] = useState([]);
+  const [companyEvents, setCompanyEvents] = useState([]);
+  const [holidays, setHolidays] = useState([]);
   const [currentDate, setCurrentDate] = useState(new Date());
   const [view, setView] = useState("month");
   const [filterMembers, setFilterMembers] = useState(new Set());
   const [filterTypes, setFilterTypes] = useState(new Set());
   const [modalOpen, setModalOpen] = useState(false);
-  const [editingSchedule, setEditingSchedule] = useState(null);
+  const [editingItem, setEditingItem] = useState(null);
+  const [editingKind, setEditingKind] = useState(null); // "schedule" | "company"
   const [modalDefaultDate, setModalDefaultDate] = useState(null);
   const [dayDetailKey, setDayDetailKey] = useState(null);
   const [saveError, setSaveError] = useState(false);
@@ -759,6 +977,8 @@ function App() {
       if (data) {
         setMembers(data.members || []);
         setSchedules(data.schedules || []);
+        setCompanyEvents(data.companyEvents || []);
+        setHolidays(data.holidays || []);
       } else {
         // nothing in the database yet — seed it once
         const seed = seedData();
@@ -787,6 +1007,31 @@ function App() {
     return map;
   }, [schedules, filterMembers, filterTypes]);
 
+  const companyEventMap = useMemo(() => {
+    const map = {};
+    companyEvents.forEach((ev) => {
+      let cursor = parseKey(ev.startDate);
+      const end = parseKey(ev.endDate || ev.startDate);
+      let guard = 0;
+      while (cursor <= end && guard < 60) {
+        const k = toKey(cursor);
+        if (!map[k]) map[k] = [];
+        map[k].push(ev);
+        cursor = addDays(cursor, 1);
+        guard++;
+      }
+    });
+    return map;
+  }, [companyEvents]);
+
+  const holidayMap = useMemo(() => {
+    const map = {};
+    holidays.forEach((h) => {
+      map[h.date] = h.name;
+    });
+    return map;
+  }, [holidays]);
+
   const goPrev = () => setCurrentDate((d) => (view === "month" ? new Date(d.getFullYear(), d.getMonth() - 1, 1) : addDays(d, -7)));
   const goNext = () => setCurrentDate((d) => (view === "month" ? new Date(d.getFullYear(), d.getMonth() + 1, 1) : addDays(d, 7)));
   const goToday = () => setCurrentDate(new Date());
@@ -811,22 +1056,37 @@ function App() {
   };
 
   const openAddModal = (dateKey) => {
-    setEditingSchedule(null);
+    setEditingItem(null);
+    setEditingKind(null);
     setModalDefaultDate(dateKey);
     setModalOpen(true);
   };
-  const openEditModal = (schedule) => {
-    setEditingSchedule(schedule);
+  const openEditSchedule = (schedule) => {
+    setEditingItem(schedule);
+    setEditingKind("schedule");
+    setModalOpen(true);
+    setDayDetailKey(null);
+  };
+  const openEditCompanyEvent = (event) => {
+    setEditingItem(event);
+    setEditingKind("company");
     setModalOpen(true);
     setDayDetailKey(null);
   };
   const closeModal = () => {
     setModalOpen(false);
-    setEditingSchedule(null);
+    setEditingItem(null);
+    setEditingKind(null);
   };
-  const pushToFirebase = (newMembers, newSchedules) => {
+  const pushToFirebase = (overrides) => {
+    const payload = {
+      members: overrides.members ?? members,
+      schedules: overrides.schedules ?? schedules,
+      companyEvents: overrides.companyEvents ?? companyEvents,
+      holidays: overrides.holidays ?? holidays,
+    };
     db.ref(STORAGE_KEY)
-      .set({ members: newMembers, schedules: newSchedules })
+      .set(payload)
       .then(() => setSaveError(false))
       .catch(() => setSaveError(true));
   };
@@ -835,26 +1095,50 @@ function App() {
     const exists = schedules.some((s) => s.id === data.id);
     const newSchedules = exists ? schedules.map((s) => (s.id === data.id ? data : s)) : [...schedules, data];
     setSchedules(newSchedules);
-    pushToFirebase(members, newSchedules);
+    pushToFirebase({ schedules: newSchedules });
     closeModal();
   };
   const deleteSchedule = (id) => {
     const newSchedules = schedules.filter((s) => s.id !== id);
     setSchedules(newSchedules);
-    pushToFirebase(members, newSchedules);
+    pushToFirebase({ schedules: newSchedules });
     closeModal();
+  };
+  const saveCompanyEvent = (data) => {
+    const exists = companyEvents.some((ev) => ev.id === data.id);
+    const newEvents = exists ? companyEvents.map((ev) => (ev.id === data.id ? data : ev)) : [...companyEvents, data];
+    setCompanyEvents(newEvents);
+    pushToFirebase({ companyEvents: newEvents });
+    closeModal();
+  };
+  const deleteCompanyEvent = (id) => {
+    const newEvents = companyEvents.filter((ev) => ev.id !== id);
+    setCompanyEvents(newEvents);
+    pushToFirebase({ companyEvents: newEvents });
+    closeModal();
+  };
+  const addHoliday = (data) => {
+    const newHoliday = { id: genId("hol"), ...data };
+    const newHolidays = [...holidays, newHoliday];
+    setHolidays(newHolidays);
+    pushToFirebase({ holidays: newHolidays });
+  };
+  const deleteHoliday = (id) => {
+    const newHolidays = holidays.filter((h) => h.id !== id);
+    setHolidays(newHolidays);
+    pushToFirebase({ holidays: newHolidays });
   };
   const addMember = (data) => {
     const newMember = { id: genId("mem"), ...data };
     const newMembers = [...members, newMember];
     setMembers(newMembers);
-    pushToFirebase(newMembers, schedules);
+    pushToFirebase({ members: newMembers });
     return newMember;
   };
   const updateMember = (id, data) => {
     const newMembers = members.map((m) => (m.id === id ? { ...m, ...data } : m));
     setMembers(newMembers);
-    pushToFirebase(newMembers, schedules);
+    pushToFirebase({ members: newMembers });
   };
   const deleteMember = (id) => {
     if (!window.confirm("팀원을 삭제하면 해당 팀원의 모든 일정도 함께 삭제됩니다. 계속할까요?")) return;
@@ -862,7 +1146,7 @@ function App() {
     const newSchedules = schedules.filter((s) => s.memberId !== id);
     setMembers(newMembers);
     setSchedules(newSchedules);
-    pushToFirebase(newMembers, newSchedules);
+    pushToFirebase({ members: newMembers, schedules: newSchedules });
     setFilterMembers((prev) => {
       const next = new Set(prev);
       next.delete(id);
@@ -872,13 +1156,26 @@ function App() {
 
   const exportCSV = () => {
     const header = ["날짜", "요일", "이름", "종류", "휴일근무대체", "메모"];
-    const rows = [...schedules]
+    const scheduleRows = [...schedules]
       .sort((a, b) => a.date.localeCompare(b.date))
       .map((s) => {
         const m = members.find((mm) => mm.id === s.memberId);
         const d = parseKey(s.date);
         return [s.date, WEEKDAYS[d.getDay()], m ? m.name : "(삭제됨)", s.type, s.type === "대체휴무" && s.isHolidayWork ? "Y" : "", (s.note || "").replace(/\r?\n/g, " ")];
       });
+    const companyRows = [];
+    companyEvents.forEach((ev) => {
+      let cursor = parseKey(ev.startDate);
+      const end = parseKey(ev.endDate || ev.startDate);
+      let guard = 0;
+      while (cursor <= end && guard < 60) {
+        const k = toKey(cursor);
+        companyRows.push([k, WEEKDAYS[cursor.getDay()], "(전사)", ev.title, "", (ev.note || "").replace(/\r?\n/g, " ")]);
+        cursor = addDays(cursor, 1);
+        guard++;
+      }
+    });
+    const rows = [...scheduleRows, ...companyRows].sort((a, b) => a[0].localeCompare(b[0]));
     const csv = "\uFEFF" + [header, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -976,13 +1273,34 @@ function App() {
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
           <div className="lg:col-span-3">
             {view === "month" ? (
-              <MonthView currentDate={currentDate} scheduleMap={scheduleMap} members={members} onAdd={openAddModal} onEditSchedule={openEditModal} onShowMore={setDayDetailKey} />
+              <MonthView
+                currentDate={currentDate}
+                scheduleMap={scheduleMap}
+                companyEventMap={companyEventMap}
+                holidayMap={holidayMap}
+                members={members}
+                onAdd={openAddModal}
+                onEditSchedule={openEditSchedule}
+                onEditCompanyEvent={openEditCompanyEvent}
+                onShowMore={setDayDetailKey}
+              />
             ) : (
-              <WeekView currentDate={currentDate} scheduleMap={scheduleMap} members={members} onAdd={openAddModal} onEditSchedule={openEditModal} onShowMore={setDayDetailKey} />
+              <WeekView
+                currentDate={currentDate}
+                scheduleMap={scheduleMap}
+                companyEventMap={companyEventMap}
+                holidayMap={holidayMap}
+                members={members}
+                onAdd={openAddModal}
+                onEditSchedule={openEditSchedule}
+                onEditCompanyEvent={openEditCompanyEvent}
+                onShowMore={setDayDetailKey}
+              />
             )}
           </div>
           <div className="lg:col-span-1 space-y-4">
             <MemberManager members={members} onAdd={addMember} onUpdate={updateMember} onDelete={deleteMember} />
+            <HolidayManager holidays={holidays} onAdd={addHoliday} onDelete={deleteHoliday} />
           </div>
         </div>
       </div>
@@ -991,19 +1309,24 @@ function App() {
         open={modalOpen}
         onClose={closeModal}
         members={members}
-        initial={editingSchedule}
+        initial={editingItem}
+        initialKind={editingKind}
         defaultDate={modalDefaultDate}
-        onSave={saveSchedule}
-        onDelete={deleteSchedule}
+        onSaveSchedule={saveSchedule}
+        onDeleteSchedule={deleteSchedule}
+        onSaveCompanyEvent={saveCompanyEvent}
+        onDeleteCompanyEvent={deleteCompanyEvent}
         onQuickAddMember={addMember}
       />
 
       <DayDetailModal
         dateKey={dayDetailKey}
         schedules={scheduleMap[dayDetailKey] || []}
+        companyEvents={companyEventMap[dayDetailKey] || []}
         members={members}
         onClose={() => setDayDetailKey(null)}
-        onEdit={openEditModal}
+        onEdit={openEditSchedule}
+        onEditCompanyEvent={openEditCompanyEvent}
         onAddNew={(key) => {
           setDayDetailKey(null);
           openAddModal(key);
