@@ -1,1 +1,1023 @@
-# schedule
+[index.html](https://github.com/user-attachments/files/29531077/index.html)
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>팀 스케줄 캘린더</title>
+<link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+<style>
+  body { margin: 0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+// ------------- Firebase (Realtime Database + Auth) -------------
+const firebaseConfig = {
+  apiKey: "AIzaSyDT3YZ0VDTRgIdzncLeDsU5Qf1eFyxauIQ",
+  authDomain: "schedule-b0602.firebaseapp.com",
+  databaseURL: "https://schedule-b0602-default-rtdb.firebaseio.com",
+  projectId: "schedule-b0602",
+  storageBucket: "schedule-b0602.firebasestorage.app",
+  messagingSenderId: "223353395014",
+  appId: "1:223353395014:web:c8d527f861e6d3ec853747",
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+const auth = firebase.auth();
+// The whole team shares one login. This fixed "email" is just an account ID for Firebase Auth —
+// it doesn't need to be a real inbox. Create this exact account once in the Firebase console
+// (Authentication → Users) with whatever password you want the team to use.
+const APP_LOGIN_EMAIL = "team@cnacare-schedule.com";
+
+// ------------- inline icons (no external icon library needed) -------------
+function Icon({ children, size = 16, color = "currentColor" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      {children}
+    </svg>
+  );
+}
+function ChevronLeft(props) { return <Icon {...props}><polyline points="15 18 9 12 15 6" /></Icon>; }
+function ChevronRight(props) { return <Icon {...props}><polyline points="9 18 15 12 9 6" /></Icon>; }
+function Plus(props) { return <Icon {...props}><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></Icon>; }
+function X(props) { return <Icon {...props}><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></Icon>; }
+function Download(props) { return <Icon {...props}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></Icon>; }
+function Trash2(props) { return <Icon {...props}><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /></Icon>; }
+function Pencil(props) { return <Icon {...props}><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" /></Icon>; }
+function RotateCcw(props) { return <Icon {...props}><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><polyline points="3 3 3 8 8 8" /></Icon>; }
+
+const STORAGE_KEY = "team_schedule_app_v1";
+
+const MEMBER_COLORS = [
+  { bg: "#2563EB", light: "#DBEAFE" },
+  { bg: "#DC2626", light: "#FEE2E2" },
+  { bg: "#059669", light: "#D1FAE5" },
+  { bg: "#D97706", light: "#FEF3C7" },
+  { bg: "#7C3AED", light: "#EDE9FE" },
+  { bg: "#DB2777", light: "#FCE7F3" },
+  { bg: "#0891B2", light: "#CFFAFE" },
+  { bg: "#65A30D", light: "#ECFCCB" },
+  { bg: "#9333EA", light: "#F3E8FF" },
+  { bg: "#EA580C", light: "#FFEDD5" },
+];
+
+const LEAVE_TYPES = ["연차", "반차", "휴무", "대체휴무", "외부일정"];
+const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
+const ACCENT = "#0D9488";
+const ACCENT_LIGHT = "#CCFBF1";
+
+const FONT_SANS =
+  "'Pretendard', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', sans-serif";
+const FONT_MONO =
+  "ui-monospace, SFMono-Regular, 'SF Mono', Consolas, 'Liberation Mono', monospace";
+
+// ---------------- utils ----------------
+function pad(n) {
+  return String(n).padStart(2, "0");
+}
+function toKey(date) {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+function parseKey(key) {
+  const [y, m, d] = key.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+function addDays(date, n) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + n);
+  return d;
+}
+function startOfWeek(date) {
+  const d = new Date(date);
+  d.setDate(d.getDate() - d.getDay());
+  return d;
+}
+function isToday(date) {
+  return toKey(date) === toKey(new Date());
+}
+function genId(prefix) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+function hashColorIndex(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+  }
+  return hash % MEMBER_COLORS.length;
+}
+function getMonthGrid(currentDate) {
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const startWeekday = firstDay.getDay();
+  const totalCells = Math.ceil((startWeekday + daysInMonth) / 7) * 7;
+  const startDate = addDays(firstDay, -startWeekday);
+  return Array.from({ length: totalCells }, (_, i) => addDays(startDate, i));
+}
+function getWeekGrid(currentDate) {
+  const start = startOfWeek(currentDate);
+  return Array.from({ length: 7 }, (_, i) => addDays(start, i));
+}
+function seedData() {
+  const today = new Date();
+  const m1 = { id: genId("mem"), name: "김민준", annualTotal: 15 };
+  const m2 = { id: genId("mem"), name: "이서연", annualTotal: 15 };
+  const m3 = { id: genId("mem"), name: "박도윤", annualTotal: 12 };
+  const members = [m1, m2, m3];
+  const schedules = [
+    { id: genId("sch"), memberId: m1.id, date: toKey(addDays(today, 1)), type: "연차", note: "개인 사유", isHolidayWork: false },
+    { id: genId("sch"), memberId: m2.id, date: toKey(addDays(today, 1)), type: "반차", note: "오전 반차", isHolidayWork: false },
+    { id: genId("sch"), memberId: m3.id, date: toKey(addDays(today, 3)), type: "외부일정", note: "거래처 미팅", isHolidayWork: false },
+    { id: genId("sch"), memberId: m1.id, date: toKey(addDays(today, 5)), type: "대체휴무", note: "지난주 토요일 근무 대체", isHolidayWork: true },
+    { id: genId("sch"), memberId: m2.id, date: toKey(addDays(today, -2)), type: "휴무", note: "", isHolidayWork: false },
+  ];
+  return { members, schedules };
+}
+
+// ------------- style helpers -------------
+function chipStyle(type, color) {
+  switch (type) {
+    case "연차":
+      return { backgroundColor: color.bg, color: "#fff", border: "1px solid transparent" };
+    case "반차":
+      return { backgroundColor: color.light, color: color.bg, border: `1px solid ${color.bg}` };
+    case "휴무":
+    case "대체휴무":
+      return {
+        backgroundColor: "#fff",
+        color: color.bg,
+        borderLeft: `3px solid ${color.bg}`,
+        borderTop: "1px solid #E5E7EB",
+        borderRight: "1px solid #E5E7EB",
+        borderBottom: "1px solid #E5E7EB",
+      };
+    case "외부일정":
+      return { backgroundColor: "#fff", color: color.bg, border: `1.5px dashed ${color.bg}` };
+    default:
+      return {};
+  }
+}
+
+// ------------- presentational pieces -------------
+function ScheduleChip({ schedule, member, onClick }) {
+  const color = MEMBER_COLORS[hashColorIndex(member?.id || "x")];
+  const style = chipStyle(schedule.type, color);
+  const flag = schedule.type === "대체휴무" && schedule.isHolidayWork ? "*" : "";
+  const label = schedule.type === "외부일정" ? (schedule.note ? schedule.note : "외부일정") : `${schedule.type}${flag}`;
+  return (
+    <div
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      title={schedule.note || ""}
+      className="text-xs px-1.5 py-1 rounded mb-1 truncate cursor-pointer font-medium leading-tight hover:opacity-80"
+      style={style}
+    >
+      {member ? member.name : "(삭제된 팀원)"} ({label})
+    </div>
+  );
+}
+
+function Legend() {
+  const neutral = { bg: "#475569", light: "#E2E8F0" };
+  return (
+    <div className="flex flex-wrap items-center gap-3 text-xs" style={{ color: "#6B7280" }}>
+      <span className="font-semibold" style={{ color: "#374151" }}>범례</span>
+      {LEAVE_TYPES.map((t) => (
+        <div key={t} className="flex items-center gap-1.5">
+          <span className="inline-block rounded" style={{ width: 22, height: 14, ...chipStyle(t, neutral) }} />
+          <span>{t}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DayCell({ date, currentMonth, schedules, members, onAdd, onEditSchedule, onShowMore, tall }) {
+  const key = toKey(date);
+  const inMonth = date.getMonth() === currentMonth;
+  const today = isToday(date);
+  const dow = date.getDay();
+  const maxVisible = tall ? 8 : 3;
+  const visible = schedules.slice(0, maxVisible);
+  const hiddenCount = schedules.length - visible.length;
+
+  let dateColor = "#374151";
+  if (dow === 0) dateColor = "#DC2626";
+  if (dow === 6) dateColor = "#2563EB";
+  if (!inMonth) dateColor = "#D1D5DB";
+
+  return (
+    <div
+      onClick={() => onAdd(key)}
+      className="border cursor-pointer flex flex-col p-1.5 transition-colors hover:bg-gray-50"
+      style={{
+        minHeight: tall ? 260 : 108,
+        backgroundColor: today ? ACCENT_LIGHT : "#fff",
+        borderColor: today ? ACCENT : "#EEF0F3",
+        opacity: inMonth ? 1 : 0.55,
+      }}
+    >
+      <div className="text-xs font-semibold mb-1 self-start px-1" style={{ fontFamily: FONT_MONO, color: dateColor }}>
+        {date.getDate()}
+      </div>
+      <div className="flex-1 overflow-hidden">
+        {visible.map((s) => (
+          <ScheduleChip key={s.id} schedule={s} member={members.find((m) => m.id === s.memberId)} onClick={() => onEditSchedule(s)} />
+        ))}
+        {hiddenCount > 0 && (
+          <div
+            onClick={(e) => {
+              e.stopPropagation();
+              onShowMore(key);
+            }}
+            className="text-xs font-medium px-1.5 cursor-pointer hover:underline"
+            style={{ color: ACCENT }}
+          >
+            +{hiddenCount}개 더보기
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MonthView({ currentDate, scheduleMap, members, onAdd, onEditSchedule, onShowMore }) {
+  const days = useMemo(() => getMonthGrid(currentDate), [currentDate]);
+  return (
+    <div className="border rounded-lg overflow-hidden" style={{ borderColor: "#EEF0F3" }}>
+      <div className="grid grid-cols-7" style={{ backgroundColor: "#F8F9FB" }}>
+        {WEEKDAYS.map((w, i) => (
+          <div key={w} className="text-center text-xs font-semibold py-2" style={{ color: i === 0 ? "#DC2626" : i === 6 ? "#2563EB" : "#6B7280" }}>
+            {w}
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-7">
+        {days.map((d) => {
+          const key = toKey(d);
+          return (
+            <DayCell
+              key={key}
+              date={d}
+              currentMonth={currentDate.getMonth()}
+              schedules={scheduleMap[key] || []}
+              members={members}
+              onAdd={onAdd}
+              onEditSchedule={onEditSchedule}
+              onShowMore={onShowMore}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function WeekView({ currentDate, scheduleMap, members, onAdd, onEditSchedule, onShowMore }) {
+  const days = useMemo(() => getWeekGrid(currentDate), [currentDate]);
+  return (
+    <div className="border rounded-lg overflow-hidden" style={{ borderColor: "#EEF0F3" }}>
+      <div className="grid grid-cols-7" style={{ backgroundColor: "#F8F9FB" }}>
+        {days.map((d, i) => (
+          <div key={i} className="text-center text-xs font-semibold py-2" style={{ color: i === 0 ? "#DC2626" : i === 6 ? "#2563EB" : "#6B7280" }}>
+            {WEEKDAYS[i]}
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-7">
+        {days.map((d) => {
+          const key = toKey(d);
+          return (
+            <DayCell
+              key={key}
+              date={d}
+              currentMonth={d.getMonth()}
+              schedules={scheduleMap[key] || []}
+              members={members}
+              onAdd={onAdd}
+              onEditSchedule={onEditSchedule}
+              onShowMore={onShowMore}
+              tall
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function FilterBar({ members, filterMembers, filterTypes, toggleMember, toggleType, resetFilters }) {
+  const hasFilter = filterMembers.size > 0 || filterTypes.size > 0;
+  return (
+    <div className="bg-white border rounded-lg p-3 flex flex-wrap items-center gap-4" style={{ borderColor: "#EEF0F3" }}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-xs font-semibold mr-1" style={{ color: "#6B7280" }}>팀원</span>
+        {members.map((m) => {
+          const color = MEMBER_COLORS[hashColorIndex(m.id)];
+          const active = filterMembers.has(m.id);
+          return (
+            <button
+              key={m.id}
+              onClick={() => toggleMember(m.id)}
+              className="text-xs px-2 py-1 rounded-full font-medium border transition"
+              style={active ? { backgroundColor: color.bg, color: "#fff", borderColor: color.bg } : { backgroundColor: "#fff", color: "#374151", borderColor: "#E5E7EB" }}
+            >
+              {m.name}
+            </button>
+          );
+        })}
+      </div>
+      <div className="w-px self-stretch" style={{ backgroundColor: "#EEF0F3" }} />
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-xs font-semibold mr-1" style={{ color: "#6B7280" }}>종류</span>
+        {LEAVE_TYPES.map((t) => {
+          const active = filterTypes.has(t);
+          return (
+            <button
+              key={t}
+              onClick={() => toggleType(t)}
+              className="text-xs px-2 py-1 rounded-full font-medium border transition"
+              style={active ? { backgroundColor: ACCENT, color: "#fff", borderColor: ACCENT } : { backgroundColor: "#fff", color: "#374151", borderColor: "#E5E7EB" }}
+            >
+              {t}
+            </button>
+          );
+        })}
+      </div>
+      {hasFilter && (
+        <button onClick={resetFilters} className="text-xs font-medium flex items-center gap-1 ml-auto" style={{ color: "#6B7280" }}>
+          <RotateCcw size={12} /> 필터 초기화
+        </button>
+      )}
+    </div>
+  );
+}
+
+function MemberManager({ members, onAdd, onUpdate, onDelete }) {
+  const [name, setName] = useState("");
+  const [total, setTotal] = useState(15);
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [editTotal, setEditTotal] = useState(15);
+
+  const submit = () => {
+    if (!name.trim()) return;
+    onAdd({ name: name.trim(), annualTotal: Number(total) || 0 });
+    setName("");
+    setTotal(15);
+  };
+  const startEdit = (m) => {
+    setEditingId(m.id);
+    setEditName(m.name);
+    setEditTotal(m.annualTotal);
+  };
+  const saveEdit = () => {
+    onUpdate(editingId, { name: editName.trim(), annualTotal: Number(editTotal) || 0 });
+    setEditingId(null);
+  };
+
+  return (
+    <div className="bg-white border rounded-lg p-4" style={{ borderColor: "#EEF0F3" }}>
+      <h3 className="text-sm font-bold mb-3" style={{ color: "#111827" }}>팀원 관리</h3>
+      <div className="space-y-1.5 mb-3">
+        {members.map((m) => {
+          const color = MEMBER_COLORS[hashColorIndex(m.id)];
+          if (editingId === m.id) {
+            return (
+              <div key={m.id} className="flex items-center gap-1.5">
+                <input value={editName} onChange={(e) => setEditName(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1" style={{ borderColor: "#E5E7EB" }} />
+                <input type="number" value={editTotal} onChange={(e) => setEditTotal(e.target.value)} className="w-14 text-xs border rounded px-2 py-1" style={{ borderColor: "#E5E7EB" }} />
+                <button onClick={saveEdit} className="text-xs font-semibold" style={{ color: ACCENT }}>저장</button>
+                <button onClick={() => setEditingId(null)} className="text-xs" style={{ color: "#9CA3AF" }}>취소</button>
+              </div>
+            );
+          }
+          return (
+            <div key={m.id} className="flex items-center justify-between text-xs py-1">
+              <span className="flex items-center gap-1.5">
+                <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color.bg }} />
+                {m.name}
+                <span style={{ color: "#9CA3AF" }}>(연 {m.annualTotal}일)</span>
+              </span>
+              <span className="flex items-center gap-2">
+                <button onClick={() => startEdit(m)}><Pencil size={12} color="#9CA3AF" /></button>
+                <button onClick={() => onDelete(m.id)}><Trash2 size={12} color="#9CA3AF" /></button>
+              </span>
+            </div>
+          );
+        })}
+        {members.length === 0 && <p className="text-xs" style={{ color: "#9CA3AF" }}>등록된 팀원이 없습니다.</p>}
+      </div>
+      <div className="flex items-center gap-1.5 pt-2 border-t" style={{ borderColor: "#F3F4F6" }}>
+        <input placeholder="이름" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
+        <input type="number" placeholder="연차" value={total} onChange={(e) => setTotal(e.target.value)} className="w-14 text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
+        <button onClick={submit} className="text-xs font-semibold px-2 py-1.5 rounded text-white" style={{ backgroundColor: ACCENT }}>추가</button>
+      </div>
+    </div>
+  );
+}
+
+function ScheduleModal({ open, onClose, members, initial, defaultDate, onSave, onDelete, onQuickAddMember }) {
+  const [memberId, setMemberId] = useState("");
+  const [date, setDate] = useState("");
+  const [type, setType] = useState("연차");
+  const [note, setNote] = useState("");
+  const [isHolidayWork, setIsHolidayWork] = useState(false);
+  const [quickName, setQuickName] = useState("");
+  const [quickTotal, setQuickTotal] = useState(15);
+  const [showQuickAdd, setShowQuickAdd] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    if (initial) {
+      setMemberId(initial.memberId);
+      setDate(initial.date);
+      setType(initial.type);
+      setNote(initial.note || "");
+      setIsHolidayWork(!!initial.isHolidayWork);
+    } else {
+      setMemberId(members[0]?.id || "");
+      setDate(defaultDate || toKey(new Date()));
+      setType("연차");
+      setNote("");
+      setIsHolidayWork(false);
+    }
+    setShowQuickAdd(false);
+  }, [open, initial, defaultDate]);
+
+  if (!open) return null;
+
+  const submit = () => {
+    if (!memberId || !date) return;
+    onSave({
+      id: initial?.id || genId("sch"),
+      memberId,
+      date,
+      type,
+      note: note.trim(),
+      isHolidayWork: type === "대체휴무" ? isHolidayWork : false,
+    });
+  };
+  const quickAdd = () => {
+    if (!quickName.trim()) return;
+    const newMember = onQuickAddMember({ name: quickName.trim(), annualTotal: Number(quickTotal) || 0 });
+    setMemberId(newMember.id);
+    setQuickName("");
+    setShowQuickAdd(false);
+  };
+
+  const needsNote = type === "연차" || type === "반차" || type === "대체휴무";
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 overflow-y-auto" style={{ maxHeight: "90vh" }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-base font-bold" style={{ color: "#111827" }}>{initial ? "일정 수정" : "일정 추가"}</h3>
+          <button onClick={onClose}><X size={18} color="#9CA3AF" /></button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>팀원</label>
+            {members.length === 0 || showQuickAdd ? (
+              <div className="flex items-center gap-1.5">
+                <input placeholder="이름" value={quickName} onChange={(e) => setQuickName(e.target.value)} className="flex-1 text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
+                <input type="number" placeholder="연차" value={quickTotal} onChange={(e) => setQuickTotal(e.target.value)} className="w-16 text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
+                <button onClick={quickAdd} className="text-xs font-semibold px-2 py-1.5 rounded text-white whitespace-nowrap" style={{ backgroundColor: ACCENT }}>추가</button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <select value={memberId} onChange={(e) => setMemberId(e.target.value)} className="flex-1 text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }}>
+                  {members.map((m) => (
+                    <option key={m.id} value={m.id}>{m.name}</option>
+                  ))}
+                </select>
+                <button onClick={() => setShowQuickAdd(true)} className="text-xs font-semibold whitespace-nowrap" style={{ color: ACCENT }}>+ 새 팀원</button>
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>날짜</label>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold block mb-1.5" style={{ color: "#374151" }}>종류</label>
+            <div className="grid grid-cols-3 gap-1.5">
+              {LEAVE_TYPES.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setType(t)}
+                  className="text-xs font-medium py-1.5 rounded border"
+                  style={type === t ? { backgroundColor: ACCENT, borderColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", borderColor: "#E5E7EB", color: "#374151" }}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {type === "대체휴무" && (
+            <label className="flex items-center gap-2 text-xs" style={{ color: "#374151" }}>
+              <input type="checkbox" checked={isHolidayWork} onChange={(e) => setIsHolidayWork(e.target.checked)} />
+              휴일근무에 따른 대체
+            </label>
+          )}
+
+          <div>
+            <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>
+              메모 {needsNote && <span style={{ color: "#DC2626" }}>*</span>}
+            </label>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              rows={3}
+              placeholder={needsNote ? "세부 사유를 입력해 주세요" : "메모 (선택)"}
+              className="w-full text-sm border rounded px-2 py-1.5 resize-none"
+              style={{ borderColor: "#E5E7EB" }}
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between mt-5">
+          <div>
+            {initial && (
+              <button onClick={() => onDelete(initial.id)} className="text-xs font-semibold flex items-center gap-1" style={{ color: "#DC2626" }}>
+                <Trash2 size={14} /> 삭제
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={onClose} className="text-xs font-semibold px-3 py-2 rounded border" style={{ borderColor: "#E5E7EB", color: "#374151" }}>취소</button>
+            <button onClick={submit} disabled={!memberId} className="text-xs font-semibold px-3 py-2 rounded text-white disabled:opacity-40" style={{ backgroundColor: ACCENT }}>저장</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DayDetailModal({ dateKey, schedules, members, onClose, onEdit, onAddNew }) {
+  if (!dateKey) return null;
+  const d = parseKey(dateKey);
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-bold" style={{ color: "#111827", fontFamily: FONT_MONO }}>
+            {d.getMonth() + 1}월 {d.getDate()}일 ({WEEKDAYS[d.getDay()]})
+          </h3>
+          <button onClick={onClose}><X size={18} color="#9CA3AF" /></button>
+        </div>
+        <div className="space-y-1 mb-3 overflow-y-auto" style={{ maxHeight: "50vh" }}>
+          {schedules.map((s) => (
+            <ScheduleChip key={s.id} schedule={s} member={members.find((m) => m.id === s.memberId)} onClick={() => onEdit(s)} />
+          ))}
+        </div>
+        <button onClick={() => onAddNew(dateKey)} className="w-full text-xs font-semibold py-2 rounded text-white flex items-center justify-center gap-1" style={{ backgroundColor: ACCENT }}>
+          <Plus size={14} /> 이 날짜에 일정 추가
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function LoginScreen() {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!password) return;
+    setError("");
+    setBusy(true);
+    try {
+      await auth.signInWithEmailAndPassword(APP_LOGIN_EMAIL, password);
+    } catch (err) {
+      setError("비밀번호가 올바르지 않습니다.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center p-4" style={{ backgroundColor: "#F5F6F8", fontFamily: FONT_SANS }}>
+      <form onSubmit={submit} className="bg-white border rounded-xl p-8 w-full max-w-sm shadow-sm" style={{ borderColor: "#EEF0F3" }}>
+        <h1 className="text-lg font-bold mb-1" style={{ color: "#111827" }}>팀 스케줄 캘린더</h1>
+        <p className="text-xs mb-5" style={{ color: "#6B7280" }}>비밀번호를 입력해 주세요.</p>
+        <input
+          type="password"
+          autoFocus
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="비밀번호"
+          className="w-full text-sm border rounded px-3 py-2 mb-3"
+          style={{ borderColor: "#E5E7EB" }}
+        />
+        {error && (
+          <p className="text-xs mb-3" style={{ color: "#DC2626" }}>{error}</p>
+        )}
+        <button
+          type="submit"
+          disabled={busy || !password}
+          className="w-full text-sm font-semibold py-2 rounded text-white disabled:opacity-40"
+          style={{ backgroundColor: ACCENT }}
+        >
+          {busy ? "확인 중..." : "로그인"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function ChangePasswordModal({ open, onClose }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+      setError("");
+      setSuccess(false);
+    }
+  }, [open]);
+
+  if (!open) return null;
+
+  const submit = async () => {
+    setError("");
+    if (next.length < 6) {
+      setError("새 비밀번호는 6자 이상이어야 합니다.");
+      return;
+    }
+    if (next !== confirm) {
+      setError("새 비밀번호가 서로 일치하지 않습니다.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const user = auth.currentUser;
+      const cred = firebase.auth.EmailAuthProvider.credential(user.email, current);
+      await user.reauthenticateWithCredential(cred);
+      await user.updatePassword(next);
+      setSuccess(true);
+    } catch (err) {
+      setError("현재 비밀번호가 올바르지 않거나 변경에 실패했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-base font-bold" style={{ color: "#111827" }}>비밀번호 변경</h3>
+          <button onClick={onClose}><X size={18} color="#9CA3AF" /></button>
+        </div>
+        {success ? (
+          <div>
+            <p className="text-sm mb-4" style={{ color: "#059669" }}>비밀번호가 변경되었습니다.</p>
+            <button onClick={onClose} className="w-full text-xs font-semibold py-2 rounded text-white" style={{ backgroundColor: ACCENT }}>확인</button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <input type="password" placeholder="현재 비밀번호" value={current} onChange={(e) => setCurrent(e.target.value)} className="w-full text-sm border rounded px-3 py-2" style={{ borderColor: "#E5E7EB" }} />
+            <input type="password" placeholder="새 비밀번호 (6자 이상)" value={next} onChange={(e) => setNext(e.target.value)} className="w-full text-sm border rounded px-3 py-2" style={{ borderColor: "#E5E7EB" }} />
+            <input type="password" placeholder="새 비밀번호 확인" value={confirm} onChange={(e) => setConfirm(e.target.value)} className="w-full text-sm border rounded px-3 py-2" style={{ borderColor: "#E5E7EB" }} />
+            {error && <p className="text-xs" style={{ color: "#DC2626" }}>{error}</p>}
+            <button
+              onClick={submit}
+              disabled={busy || !current || !next || !confirm}
+              className="w-full text-xs font-semibold py-2 rounded text-white disabled:opacity-40"
+              style={{ backgroundColor: ACCENT }}
+            >
+              {busy ? "변경 중..." : "비밀번호 변경"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ------------- main app -------------
+function App() {
+  const [authLoaded, setAuthLoaded] = useState(false);
+  const [user, setUser] = useState(null);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [members, setMembers] = useState([]);
+  const [schedules, setSchedules] = useState([]);
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [view, setView] = useState("month");
+  const [filterMembers, setFilterMembers] = useState(new Set());
+  const [filterTypes, setFilterTypes] = useState(new Set());
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState(null);
+  const [modalDefaultDate, setModalDefaultDate] = useState(null);
+  const [dayDetailKey, setDayDetailKey] = useState(null);
+  const [saveError, setSaveError] = useState(false);
+
+  // track login state (persists across page reloads automatically)
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged((u) => {
+      setUser(u);
+      setAuthLoaded(true);
+    });
+    return unsubscribe;
+  }, []);
+
+  // subscribe to Firebase Realtime Database — keeps all team members in sync live
+  useEffect(() => {
+    if (!user) return;
+    const dataRef = db.ref(STORAGE_KEY);
+    const handleValue = (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setMembers(data.members || []);
+        setSchedules(data.schedules || []);
+      } else {
+        // nothing in the database yet — seed it once
+        const seed = seedData();
+        dataRef.set(seed).catch(() => setSaveError(true));
+      }
+      setLoaded(true);
+      setSaveError(false);
+    };
+    const handleError = () => {
+      setSaveError(true);
+      setLoaded(true);
+    };
+    dataRef.on("value", handleValue, handleError);
+    return () => dataRef.off("value", handleValue);
+  }, [user]);
+
+  const scheduleMap = useMemo(() => {
+    const map = {};
+    const filtered = schedules.filter(
+      (s) => (filterMembers.size === 0 || filterMembers.has(s.memberId)) && (filterTypes.size === 0 || filterTypes.has(s.type))
+    );
+    filtered.forEach((s) => {
+      if (!map[s.date]) map[s.date] = [];
+      map[s.date].push(s);
+    });
+    return map;
+  }, [schedules, filterMembers, filterTypes]);
+
+  const goPrev = () => setCurrentDate((d) => (view === "month" ? new Date(d.getFullYear(), d.getMonth() - 1, 1) : addDays(d, -7)));
+  const goNext = () => setCurrentDate((d) => (view === "month" ? new Date(d.getFullYear(), d.getMonth() + 1, 1) : addDays(d, 7)));
+  const goToday = () => setCurrentDate(new Date());
+
+  const toggleMember = (id) =>
+    setFilterMembers((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const toggleType = (t) =>
+    setFilterTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t);
+      else next.add(t);
+      return next;
+    });
+  const resetFilters = () => {
+    setFilterMembers(new Set());
+    setFilterTypes(new Set());
+  };
+
+  const openAddModal = (dateKey) => {
+    setEditingSchedule(null);
+    setModalDefaultDate(dateKey);
+    setModalOpen(true);
+  };
+  const openEditModal = (schedule) => {
+    setEditingSchedule(schedule);
+    setModalOpen(true);
+    setDayDetailKey(null);
+  };
+  const closeModal = () => {
+    setModalOpen(false);
+    setEditingSchedule(null);
+  };
+  const pushToFirebase = (newMembers, newSchedules) => {
+    db.ref(STORAGE_KEY)
+      .set({ members: newMembers, schedules: newSchedules })
+      .then(() => setSaveError(false))
+      .catch(() => setSaveError(true));
+  };
+
+  const saveSchedule = (data) => {
+    const exists = schedules.some((s) => s.id === data.id);
+    const newSchedules = exists ? schedules.map((s) => (s.id === data.id ? data : s)) : [...schedules, data];
+    setSchedules(newSchedules);
+    pushToFirebase(members, newSchedules);
+    closeModal();
+  };
+  const deleteSchedule = (id) => {
+    const newSchedules = schedules.filter((s) => s.id !== id);
+    setSchedules(newSchedules);
+    pushToFirebase(members, newSchedules);
+    closeModal();
+  };
+  const addMember = (data) => {
+    const newMember = { id: genId("mem"), ...data };
+    const newMembers = [...members, newMember];
+    setMembers(newMembers);
+    pushToFirebase(newMembers, schedules);
+    return newMember;
+  };
+  const updateMember = (id, data) => {
+    const newMembers = members.map((m) => (m.id === id ? { ...m, ...data } : m));
+    setMembers(newMembers);
+    pushToFirebase(newMembers, schedules);
+  };
+  const deleteMember = (id) => {
+    if (!window.confirm("팀원을 삭제하면 해당 팀원의 모든 일정도 함께 삭제됩니다. 계속할까요?")) return;
+    const newMembers = members.filter((m) => m.id !== id);
+    const newSchedules = schedules.filter((s) => s.memberId !== id);
+    setMembers(newMembers);
+    setSchedules(newSchedules);
+    pushToFirebase(newMembers, newSchedules);
+    setFilterMembers((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  };
+
+  const exportCSV = () => {
+    const header = ["날짜", "요일", "이름", "종류", "휴일근무대체", "메모"];
+    const rows = [...schedules]
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((s) => {
+        const m = members.find((mm) => mm.id === s.memberId);
+        const d = parseKey(s.date);
+        return [s.date, WEEKDAYS[d.getDay()], m ? m.name : "(삭제됨)", s.type, s.type === "대체휴무" && s.isHolidayWork ? "Y" : "", (s.note || "").replace(/\r?\n/g, " ")];
+      });
+    const csv = "\uFEFF" + [header, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `team-schedule-${toKey(currentDate)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const logout = () => auth.signOut();
+
+  const titleText =
+    view === "month"
+      ? `${currentDate.getFullYear()}년 ${currentDate.getMonth() + 1}월`
+      : (() => {
+          const days = getWeekGrid(currentDate);
+          const s = days[0],
+            e = days[6];
+          return `${s.getFullYear()}년 ${s.getMonth() + 1}월 ${s.getDate()}일 - ${e.getMonth() + 1}월 ${e.getDate()}일`;
+        })();
+
+  if (!authLoaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: "#F5F6F8", fontFamily: FONT_SANS }}>
+        <p className="text-sm" style={{ color: "#9CA3AF" }}>불러오는 중...</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginScreen />;
+  }
+
+  if (!loaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: "#F5F6F8", fontFamily: FONT_SANS }}>
+        <p className="text-sm" style={{ color: "#9CA3AF" }}>불러오는 중...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen w-full p-4 md:p-6" style={{ backgroundColor: "#F5F6F8", fontFamily: FONT_SANS }}>
+      <div className="max-w-7xl mx-auto space-y-4">
+        <div className="bg-white border rounded-lg p-4" style={{ borderColor: "#EEF0F3" }}>
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <div className="flex items-center gap-3">
+              <h1 className="text-lg font-bold" style={{ color: "#111827" }}>팀 스케줄 캘린더</h1>
+              <div className="flex items-center gap-1">
+                <button onClick={goPrev} className="p-1.5 rounded hover:bg-gray-100"><ChevronLeft size={16} /></button>
+                <span className="text-sm font-semibold px-1" style={{ fontFamily: FONT_MONO, color: "#374151", minWidth: 190, display: "inline-block", textAlign: "center", whiteSpace: "nowrap" }}>
+                  {titleText}
+                </span>
+                <button onClick={goNext} className="p-1.5 rounded hover:bg-gray-100"><ChevronRight size={16} /></button>
+              </div>
+              <button onClick={goToday} className="text-xs font-semibold px-2 py-1 rounded border" style={{ borderColor: "#E5E7EB", color: "#6B7280" }}>오늘</button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <div className="flex items-center rounded-lg border overflow-hidden" style={{ borderColor: "#E5E7EB" }}>
+                <button onClick={() => setView("month")} className="text-xs font-semibold px-3 py-1.5" style={view === "month" ? { backgroundColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", color: "#6B7280" }}>월간</button>
+                <button onClick={() => setView("week")} className="text-xs font-semibold px-3 py-1.5" style={view === "week" ? { backgroundColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", color: "#6B7280" }}>주간</button>
+              </div>
+              <button onClick={exportCSV} className="text-xs font-semibold px-3 py-1.5 rounded border flex items-center gap-1" style={{ borderColor: "#E5E7EB", color: "#374151" }}>
+                <Download size={14} /> CSV 내보내기
+              </button>
+              <button onClick={() => openAddModal(toKey(new Date()))} className="text-xs font-semibold px-3 py-1.5 rounded text-white flex items-center gap-1" style={{ backgroundColor: ACCENT }}>
+                <Plus size={14} /> 일정 추가
+              </button>
+              <div className="w-px h-5" style={{ backgroundColor: "#E5E7EB" }} />
+              <button onClick={() => setChangePasswordOpen(true)} className="text-xs font-semibold px-2 py-1.5" style={{ color: "#6B7280" }}>비밀번호 변경</button>
+              <button onClick={logout} className="text-xs font-semibold px-2 py-1.5" style={{ color: "#DC2626" }}>로그아웃</button>
+            </div>
+          </div>
+          <Legend />
+        </div>
+
+        {saveError && (
+          <div className="text-xs px-3 py-2 rounded" style={{ backgroundColor: "#FEE2E2", color: "#DC2626" }}>
+            데이터베이스 동기화에 실패했습니다. 인터넷 연결과 Firebase 설정을 확인해 주세요.
+          </div>
+        )}
+
+        <FilterBar members={members} filterMembers={filterMembers} filterTypes={filterTypes} toggleMember={toggleMember} toggleType={toggleType} resetFilters={resetFilters} />
+
+        {members.length === 0 && (
+          <div className="text-xs px-4 py-3 rounded-lg border" style={{ backgroundColor: "#F0FDFA", borderColor: ACCENT_LIGHT, color: "#0F766E" }}>
+            아직 등록된 팀원이 없습니다. 오른쪽 팀원 관리에서 팀원을 먼저 추가해 주세요.
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+          <div className="lg:col-span-3">
+            {view === "month" ? (
+              <MonthView currentDate={currentDate} scheduleMap={scheduleMap} members={members} onAdd={openAddModal} onEditSchedule={openEditModal} onShowMore={setDayDetailKey} />
+            ) : (
+              <WeekView currentDate={currentDate} scheduleMap={scheduleMap} members={members} onAdd={openAddModal} onEditSchedule={openEditModal} onShowMore={setDayDetailKey} />
+            )}
+          </div>
+          <div className="lg:col-span-1 space-y-4">
+            <MemberManager members={members} onAdd={addMember} onUpdate={updateMember} onDelete={deleteMember} />
+          </div>
+        </div>
+      </div>
+
+      <ScheduleModal
+        open={modalOpen}
+        onClose={closeModal}
+        members={members}
+        initial={editingSchedule}
+        defaultDate={modalDefaultDate}
+        onSave={saveSchedule}
+        onDelete={deleteSchedule}
+        onQuickAddMember={addMember}
+      />
+
+      <DayDetailModal
+        dateKey={dayDetailKey}
+        schedules={scheduleMap[dayDetailKey] || []}
+        members={members}
+        onClose={() => setDayDetailKey(null)}
+        onEdit={openEditModal}
+        onAddNew={(key) => {
+          setDayDetailKey(null);
+          openAddModal(key);
+        }}
+      />
+
+      <ChangePasswordModal open={changePasswordOpen} onClose={() => setChangePasswordOpen(false)} />
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
