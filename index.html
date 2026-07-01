@@ -452,6 +452,7 @@ function FilterBar({ members, filterMembers, filterTypes, toggleMember, toggleTy
 }
 
 function MemberManager({ members, onAdd, onUpdate, onDelete }) {
+  const [open, setOpen] = useState(true);
   const [name, setName] = useState("");
   const [total, setTotal] = useState(15);
   const [editingId, setEditingId] = useState(null);
@@ -476,46 +477,54 @@ function MemberManager({ members, onAdd, onUpdate, onDelete }) {
 
   return (
     <div className="bg-white border rounded-lg p-4" style={{ borderColor: "#EEF0F3" }}>
-      <h3 className="text-sm font-bold mb-3" style={{ color: "#111827" }}>팀원 관리</h3>
-      <div className="space-y-1.5 mb-3">
-        {members.map((m) => {
-          const color = MEMBER_COLORS[hashColorIndex(m.id)];
-          if (editingId === m.id) {
-            return (
-              <div key={m.id} className="flex items-center gap-1.5">
-                <input value={editName} onChange={(e) => setEditName(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1" style={{ borderColor: "#E5E7EB" }} />
-                <input type="number" value={editTotal} onChange={(e) => setEditTotal(e.target.value)} className="w-14 text-xs border rounded px-2 py-1" style={{ borderColor: "#E5E7EB" }} />
-                <button onClick={saveEdit} className="text-xs font-semibold" style={{ color: ACCENT }}>저장</button>
-                <button onClick={() => setEditingId(null)} className="text-xs" style={{ color: "#9CA3AF" }}>취소</button>
-              </div>
-            );
-          }
-          return (
-            <div key={m.id} className="flex items-center justify-between text-xs py-1">
-              <span className="flex items-center gap-1.5">
-                <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color.bg }} />
-                {m.name}
-                <span style={{ color: "#9CA3AF" }}>(연 {m.annualTotal}일)</span>
-              </span>
-              <span className="flex items-center gap-2">
-                <button onClick={() => startEdit(m)} className="p-1.5 -m-1.5"><Pencil size={12} color="#9CA3AF" /></button>
-                <button onClick={() => onDelete(m.id)} className="p-1.5 -m-1.5"><Trash2 size={12} color="#9CA3AF" /></button>
-              </span>
-            </div>
-          );
-        })}
-        {members.length === 0 && <p className="text-xs" style={{ color: "#9CA3AF" }}>등록된 팀원이 없습니다.</p>}
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-bold" style={{ color: "#111827" }}>팀원 관리</h3>
+        <button onClick={() => setOpen(!open)} className="text-xs font-semibold px-1.5 py-0.5" style={{ color: ACCENT }}>{open ? "숨기기" : "펼치기"}</button>
       </div>
-      <div className="flex items-center gap-1.5 pt-2 border-t" style={{ borderColor: "#F3F4F6" }}>
-        <input placeholder="이름" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
-        <input type="number" placeholder="연차" value={total} onChange={(e) => setTotal(e.target.value)} className="w-14 text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
-        <button onClick={submit} className="text-xs font-semibold px-2 py-1.5 rounded text-white" style={{ backgroundColor: ACCENT }}>추가</button>
-      </div>
+      {open && (
+        <>
+          <div className="space-y-1.5 mb-3">
+            {members.map((m) => {
+              const color = MEMBER_COLORS[hashColorIndex(m.id)];
+              if (editingId === m.id) {
+                return (
+                  <div key={m.id} className="flex items-center gap-1.5">
+                    <input value={editName} onChange={(e) => setEditName(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1" style={{ borderColor: "#E5E7EB" }} />
+                    <input type="number" value={editTotal} onChange={(e) => setEditTotal(e.target.value)} className="w-14 text-xs border rounded px-2 py-1" style={{ borderColor: "#E5E7EB" }} />
+                    <button onClick={saveEdit} className="text-xs font-semibold" style={{ color: ACCENT }}>저장</button>
+                    <button onClick={() => setEditingId(null)} className="text-xs" style={{ color: "#9CA3AF" }}>취소</button>
+                  </div>
+                );
+              }
+              return (
+                <div key={m.id} className="flex items-center justify-between text-xs py-1">
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color.bg }} />
+                    {m.name}
+                    <span style={{ color: "#9CA3AF" }}>(연 {m.annualTotal}일)</span>
+                  </span>
+                  <span className="flex items-center gap-2">
+                    <button onClick={() => startEdit(m)} className="p-1.5 -m-1.5"><Pencil size={12} color="#9CA3AF" /></button>
+                    <button onClick={() => onDelete(m.id)} className="p-1.5 -m-1.5"><Trash2 size={12} color="#9CA3AF" /></button>
+                  </span>
+                </div>
+              );
+            })}
+            {members.length === 0 && <p className="text-xs" style={{ color: "#9CA3AF" }}>등록된 팀원이 없습니다.</p>}
+          </div>
+          <div className="flex items-center gap-1.5 pt-2 border-t" style={{ borderColor: "#F3F4F6" }}>
+            <input placeholder="이름" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
+            <input type="number" placeholder="연차" value={total} onChange={(e) => setTotal(e.target.value)} className="w-14 text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
+            <button onClick={submit} className="text-xs font-semibold px-2 py-1.5 rounded text-white" style={{ backgroundColor: ACCENT }}>추가</button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
 function HolidayManager({ holidays, onAdd, onDelete }) {
+  const [open, setOpen] = useState(true);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [name, setName] = useState("");
@@ -533,34 +542,41 @@ function HolidayManager({ holidays, onAdd, onDelete }) {
 
   return (
     <div className="bg-white border rounded-lg p-4" style={{ borderColor: "#EEF0F3" }}>
-      <h3 className="text-sm font-bold mb-3" style={{ color: "#111827" }}>공휴일 관리</h3>
-      <div className="space-y-1 mb-3 overflow-y-auto" style={{ maxHeight: 180 }}>
-        {sorted.length === 0 && <p className="text-xs" style={{ color: "#9CA3AF" }}>등록된 공휴일이 없습니다.</p>}
-        {sorted.map((h) => {
-          const s = h.startDate || h.date;
-          const e = h.endDate || h.startDate || h.date;
-          return (
-            <div key={h.id} className="flex items-center justify-between text-xs py-1">
-              <span>
-                <span style={{ fontFamily: FONT_MONO, color: "#9CA3AF" }}>{s === e ? s : `${s} ~ ${e}`}</span>{" "}
-                <span style={{ color: "#DC2626", fontWeight: 600 }}>{h.name}</span>
-              </span>
-              <button onClick={() => onDelete(h.id)} className="p-1.5 -m-1.5"><Trash2 size={12} color="#9CA3AF" /></button>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-bold" style={{ color: "#111827" }}>공휴일 관리</h3>
+        <button onClick={() => setOpen(!open)} className="text-xs font-semibold px-1.5 py-0.5" style={{ color: ACCENT }}>{open ? "숨기기" : "펼치기"}</button>
+      </div>
+      {open && (
+        <>
+          <div className="space-y-1 mb-3 overflow-y-auto" style={{ maxHeight: 180 }}>
+            {sorted.length === 0 && <p className="text-xs" style={{ color: "#9CA3AF" }}>등록된 공휴일이 없습니다.</p>}
+            {sorted.map((h) => {
+              const s = h.startDate || h.date;
+              const e = h.endDate || h.startDate || h.date;
+              return (
+                <div key={h.id} className="flex items-center justify-between text-xs py-1">
+                  <span>
+                    <span style={{ fontFamily: FONT_MONO, color: "#9CA3AF" }}>{s === e ? s : `${s} ~ ${e}`}</span>{" "}
+                    <span style={{ color: "#DC2626", fontWeight: 600 }}>{h.name}</span>
+                  </span>
+                  <button onClick={() => onDelete(h.id)} className="p-1.5 -m-1.5"><Trash2 size={12} color="#9CA3AF" /></button>
+                </div>
+              );
+            })}
+          </div>
+          <div className="space-y-1.5 pt-2 border-t" style={{ borderColor: "#F3F4F6" }}>
+            <div className="flex items-center gap-1.5">
+              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+              <span className="text-xs" style={{ color: "#9CA3AF" }}>~</span>
+              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
             </div>
-          );
-        })}
-      </div>
-      <div className="space-y-1.5 pt-2 border-t" style={{ borderColor: "#F3F4F6" }}>
-        <div className="flex items-center gap-1.5">
-          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
-          <span className="text-xs" style={{ color: "#9CA3AF" }}>~</span>
-          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
-        </div>
-        <div className="flex items-center gap-1.5">
-          <input placeholder="공휴일명" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB" }} />
-          <button onClick={submit} className="text-xs font-semibold px-2 py-1.5 rounded text-white whitespace-nowrap" style={{ backgroundColor: ACCENT }}>추가</button>
-        </div>
-      </div>
+            <div className="flex items-center gap-1.5">
+              <input placeholder="공휴일명" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 text-xs border rounded px-2 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB" }} />
+              <button onClick={submit} className="text-xs font-semibold px-2 py-1.5 rounded text-white whitespace-nowrap" style={{ backgroundColor: ACCENT }}>추가</button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -967,6 +983,33 @@ function ChangePasswordModal({ open, onClose }) {
 }
 
 // ------------- main app -------------
+function MobileDayAgenda({ schedules, companyEvents, holidayName, members, onEditSchedule, onEditCompanyEvent }) {
+  const today = new Date();
+  const hasItems = schedules.length > 0 || companyEvents.length > 0;
+  return (
+    <div className="bg-white border rounded-lg p-4" style={{ borderColor: "#EEF0F3" }}>
+      <div className="flex items-baseline justify-between mb-3">
+        <h3 className="text-sm font-bold" style={{ color: "#111827", fontFamily: FONT_MONO }}>
+          {today.getMonth() + 1}월 {today.getDate()}일 ({WEEKDAYS[today.getDay()]}) · 오늘
+        </h3>
+        {holidayName && <span className="text-xs font-semibold" style={{ color: "#DC2626" }}>{holidayName}</span>}
+      </div>
+      {hasItems ? (
+        <div className="space-y-1">
+          {companyEvents.map((ev) => (
+            <CompanyEventChip key={ev.id} event={ev} onClick={() => onEditCompanyEvent(ev)} />
+          ))}
+          {schedules.map((s) => (
+            <ScheduleChip key={s.id} schedule={s} member={members.find((m) => m.id === s.memberId)} onClick={() => onEditSchedule(s)} />
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs" style={{ color: "#9CA3AF" }}>오늘 등록된 일정이 없습니다.</p>
+      )}
+    </div>
+  );
+}
+
 function App() {
   const [authLoaded, setAuthLoaded] = useState(false);
   const [user, setUser] = useState(null);
@@ -985,6 +1028,7 @@ function App() {
   const [editingKind, setEditingKind] = useState(null); // "schedule" | "company"
   const [modalDefaultDate, setModalDefaultDate] = useState(null);
   const [dayDetailKey, setDayDetailKey] = useState(null);
+  const [mobileShowFullMonth, setMobileShowFullMonth] = useState(false);
   const [saveError, setSaveError] = useState(false);
 
   // track login state (persists across page reloads automatically)
@@ -1291,23 +1335,35 @@ function App() {
               <button onClick={goToday} className="text-xs font-semibold px-2 py-1.5 rounded border" style={{ borderColor: "#E5E7EB", color: "#6B7280" }}>오늘</button>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            {/* desktop actions */}
+            <div className="hidden sm:flex flex-wrap items-center gap-2">
               <div className="flex items-center rounded-lg border overflow-hidden" style={{ borderColor: "#E5E7EB" }}>
                 <button onClick={() => setView("month")} className="text-xs font-semibold px-3 py-2" style={view === "month" ? { backgroundColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", color: "#6B7280" }}>월간</button>
                 <button onClick={() => setView("week")} className="text-xs font-semibold px-3 py-2" style={view === "week" ? { backgroundColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", color: "#6B7280" }}>주간</button>
               </div>
-              <button onClick={exportCSV} className="text-xs font-semibold px-2.5 sm:px-3 py-2 rounded border flex items-center gap-1" style={{ borderColor: "#E5E7EB", color: "#374151" }}>
-                <Download size={14} /> <span className="hidden sm:inline">CSV 내보내기</span>
+              <button onClick={exportCSV} className="text-xs font-semibold px-3 py-2 rounded border flex items-center gap-1" style={{ borderColor: "#E5E7EB", color: "#374151" }}>
+                <Download size={14} /> CSV 내보내기
               </button>
-              <button onClick={() => openAddModal(toKey(new Date()))} className="text-xs font-semibold px-2.5 sm:px-3 py-2 rounded text-white flex items-center gap-1" style={{ backgroundColor: ACCENT }}>
+              <button onClick={() => openAddModal(toKey(new Date()))} className="text-xs font-semibold px-3 py-2 rounded text-white flex items-center gap-1" style={{ backgroundColor: ACCENT }}>
                 <Plus size={14} /> 일정 추가
               </button>
-              <div className="w-px h-5 hidden sm:block" style={{ backgroundColor: "#E5E7EB" }} />
+              <div className="w-px h-5" style={{ backgroundColor: "#E5E7EB" }} />
               <button onClick={() => setChangePasswordOpen(true)} className="text-xs font-semibold px-2 py-2" style={{ color: "#6B7280" }}>비밀번호 변경</button>
               <button onClick={logout} className="text-xs font-semibold px-2 py-2" style={{ color: "#DC2626" }}>로그아웃</button>
             </div>
+
+            {/* mobile actions: one line, no view toggle / CSV */}
+            <div className="flex sm:hidden items-center gap-1.5">
+              <button onClick={() => openAddModal(toKey(new Date()))} className="text-xs font-semibold px-2.5 py-2 rounded text-white flex items-center gap-1" style={{ backgroundColor: ACCENT }}>
+                <Plus size={13} /> 일정 추가
+              </button>
+              <button onClick={() => setChangePasswordOpen(true)} className="text-xs font-semibold px-2 py-2 whitespace-nowrap" style={{ color: "#6B7280" }}>비밀번호 변경</button>
+              <button onClick={logout} className="text-xs font-semibold px-2 py-2 whitespace-nowrap" style={{ color: "#DC2626" }}>로그아웃</button>
+            </div>
           </div>
-          <Legend />
+          <div className="hidden sm:block">
+            <Legend />
+          </div>
         </div>
 
         {saveError && (
@@ -1325,32 +1381,79 @@ function App() {
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-          <div className="lg:col-span-3">
-            {view === "month" ? (
-              <MonthView
-                currentDate={currentDate}
-                scheduleMap={scheduleMap}
-                companyEventMap={companyEventMap}
-                holidayMap={holidayMap}
-                members={members}
-                onAdd={openAddModal}
-                onEditSchedule={openEditSchedule}
-                onEditCompanyEvent={openEditCompanyEvent}
-                onShowMore={setDayDetailKey}
-              />
-            ) : (
-              <WeekView
-                currentDate={currentDate}
-                scheduleMap={scheduleMap}
-                companyEventMap={companyEventMap}
-                holidayMap={holidayMap}
-                members={members}
-                onAdd={openAddModal}
-                onEditSchedule={openEditSchedule}
-                onEditCompanyEvent={openEditCompanyEvent}
-                onShowMore={setDayDetailKey}
-              />
-            )}
+          <div className="lg:col-span-3 space-y-3">
+            {/* desktop: month/week grid as before */}
+            <div className="hidden sm:block">
+              {view === "month" ? (
+                <MonthView
+                  currentDate={currentDate}
+                  scheduleMap={scheduleMap}
+                  companyEventMap={companyEventMap}
+                  holidayMap={holidayMap}
+                  members={members}
+                  onAdd={openAddModal}
+                  onEditSchedule={openEditSchedule}
+                  onEditCompanyEvent={openEditCompanyEvent}
+                  onShowMore={setDayDetailKey}
+                />
+              ) : (
+                <WeekView
+                  currentDate={currentDate}
+                  scheduleMap={scheduleMap}
+                  companyEventMap={companyEventMap}
+                  holidayMap={holidayMap}
+                  members={members}
+                  onAdd={openAddModal}
+                  onEditSchedule={openEditSchedule}
+                  onEditCompanyEvent={openEditCompanyEvent}
+                  onShowMore={setDayDetailKey}
+                />
+              )}
+            </div>
+
+            {/* mobile: today's agenda by default, full month grid on demand */}
+            <div className="sm:hidden space-y-3">
+              {mobileShowFullMonth ? (
+                <>
+                  <MonthView
+                    currentDate={currentDate}
+                    scheduleMap={scheduleMap}
+                    companyEventMap={companyEventMap}
+                    holidayMap={holidayMap}
+                    members={members}
+                    onAdd={openAddModal}
+                    onEditSchedule={openEditSchedule}
+                    onEditCompanyEvent={openEditCompanyEvent}
+                    onShowMore={setDayDetailKey}
+                  />
+                  <button
+                    onClick={() => setMobileShowFullMonth(false)}
+                    className="w-full text-xs font-semibold py-2.5 rounded border"
+                    style={{ borderColor: "#E5E7EB", color: "#374151" }}
+                  >
+                    오늘 일정만 보기
+                  </button>
+                </>
+              ) : (
+                <>
+                  <MobileDayAgenda
+                    schedules={scheduleMap[toKey(new Date())] || []}
+                    companyEvents={companyEventMap[toKey(new Date())] || []}
+                    holidayName={holidayMap[toKey(new Date())]}
+                    members={members}
+                    onEditSchedule={openEditSchedule}
+                    onEditCompanyEvent={openEditCompanyEvent}
+                  />
+                  <button
+                    onClick={() => setMobileShowFullMonth(true)}
+                    className="w-full text-xs font-semibold py-2.5 rounded text-white"
+                    style={{ backgroundColor: ACCENT }}
+                  >
+                    전월 일정 보기
+                  </button>
+                </>
+              )}
+            </div>
           </div>
           <div className="lg:col-span-1 space-y-4">
             <MemberManager members={members} onAdd={addMember} onUpdate={updateMember} onDelete={deleteMember} />
