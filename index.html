@@ -56,6 +56,14 @@ function Download(props) { return <Icon {...props}><path d="M21 15v4a2 2 0 0 1-2
 function Trash2(props) { return <Icon {...props}><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /></Icon>; }
 function Pencil(props) { return <Icon {...props}><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" /></Icon>; }
 function RotateCcw(props) { return <Icon {...props}><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><polyline points="3 3 3 8 8 8" /></Icon>; }
+function PipIcon(props) {
+  return (
+    <Icon {...props}>
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <rect x="12" y="12.5" width="7" height="5" rx="1" fill="currentColor" stroke="none" />
+    </Icon>
+  );
+}
 
 const STORAGE_KEY = "team_schedule_app_v1";
 
@@ -1010,6 +1018,21 @@ function MobileDayAgenda({ schedules, companyEvents, holidayName, members, onEdi
   );
 }
 
+function PipContent({ schedules, companyEvents, holidayName, members, onEditSchedule, onEditCompanyEvent }) {
+  return (
+    <div style={{ fontFamily: FONT_SANS, backgroundColor: "#F5F6F8", minHeight: "100vh", padding: 10 }}>
+      <MobileDayAgenda
+        schedules={schedules}
+        companyEvents={companyEvents}
+        holidayName={holidayName}
+        members={members}
+        onEditSchedule={onEditSchedule}
+        onEditCompanyEvent={onEditCompanyEvent}
+      />
+    </div>
+  );
+}
+
 function App() {
   const [authLoaded, setAuthLoaded] = useState(false);
   const [user, setUser] = useState(null);
@@ -1029,6 +1052,7 @@ function App() {
   const [modalDefaultDate, setModalDefaultDate] = useState(null);
   const [dayDetailKey, setDayDetailKey] = useState(null);
   const [mobileShowFullMonth, setMobileShowFullMonth] = useState(false);
+  const [pipRoot, setPipRoot] = useState(null);
   const [saveError, setSaveError] = useState(false);
 
   // track login state (persists across page reloads automatically)
@@ -1288,6 +1312,58 @@ function App() {
 
   const logout = () => auth.signOut();
 
+  const openPip = async () => {
+    if (!("documentPictureInPicture" in window)) {
+      alert("이 기능은 최신 Chrome, Edge, Firefox 브라우저의 PC 화면에서만 사용할 수 있어요.");
+      return;
+    }
+    if (pipRoot) return;
+    try {
+      const pipWindow = await window.documentPictureInPicture.requestWindow({ width: 300, height: 420 });
+      [...document.styleSheets].forEach((styleSheet) => {
+        try {
+          const cssRules = [...styleSheet.cssRules].map((rule) => rule.cssText).join("");
+          const style = document.createElement("style");
+          style.textContent = cssRules;
+          pipWindow.document.head.appendChild(style);
+        } catch (e) {
+          const link = document.createElement("link");
+          link.rel = "stylesheet";
+          link.type = styleSheet.type;
+          link.media = styleSheet.media;
+          link.href = styleSheet.href;
+          pipWindow.document.head.appendChild(link);
+        }
+      });
+      pipWindow.document.body.style.margin = "0";
+      const container = pipWindow.document.createElement("div");
+      pipWindow.document.body.appendChild(container);
+      const root = ReactDOM.createRoot(container);
+      pipWindow.addEventListener("pagehide", () => {
+        setPipRoot(null);
+      });
+      setPipRoot(root);
+    } catch (e) {
+      alert("미니창을 여는 데 실패했습니다.");
+    }
+  };
+
+  // keep the mini floating window's content live-synced with today's data
+  useEffect(() => {
+    if (!pipRoot) return;
+    const todayKey = toKey(new Date());
+    pipRoot.render(
+      <PipContent
+        schedules={scheduleMap[todayKey] || []}
+        companyEvents={companyEventMap[todayKey] || []}
+        holidayName={holidayMap[todayKey]}
+        members={members}
+        onEditSchedule={openEditSchedule}
+        onEditCompanyEvent={openEditCompanyEvent}
+      />
+    );
+  }, [pipRoot, scheduleMap, companyEventMap, holidayMap, members]);
+
   const titleText =
     view === "month"
       ? `${currentDate.getFullYear()}년 ${currentDate.getMonth() + 1}월`
@@ -1343,6 +1419,14 @@ function App() {
               </div>
               <button onClick={exportCSV} className="text-xs font-semibold px-3 py-2 rounded border flex items-center gap-1" style={{ borderColor: "#E5E7EB", color: "#374151" }}>
                 <Download size={14} /> CSV 내보내기
+              </button>
+              <button
+                onClick={openPip}
+                disabled={!!pipRoot}
+                className="text-xs font-semibold px-3 py-2 rounded border flex items-center gap-1 disabled:opacity-50"
+                style={{ borderColor: "#E5E7EB", color: pipRoot ? ACCENT : "#374151" }}
+              >
+                <PipIcon size={14} /> {pipRoot ? "미니창 열림" : "미니창으로 보기"}
               </button>
               <button onClick={() => openAddModal(toKey(new Date()))} className="text-xs font-semibold px-3 py-2 rounded text-white flex items-center gap-1" style={{ backgroundColor: ACCENT }}>
                 <Plus size={14} /> 일정 추가
