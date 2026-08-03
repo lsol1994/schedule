@@ -1054,6 +1054,7 @@ function App() {
   const [mobileShowFullMonth, setMobileShowFullMonth] = useState(false);
   const [pipRoot, setPipRoot] = useState(null);
   const [saveError, setSaveError] = useState(false);
+  const [needsSeedConfirm, setNeedsSeedConfirm] = useState(false);
 
   // track login state (persists across page reloads automatically)
   useEffect(() => {
@@ -1075,10 +1076,13 @@ function App() {
         setSchedules(data.schedules || []);
         setCompanyEvents(data.companyEvents || []);
         setHolidays(data.holidays || []);
+        setNeedsSeedConfirm(false);
       } else {
-        // nothing in the database yet — seed it once
-        const seed = seedData();
-        dataRef.set(seed).catch(() => setSaveError(true));
+        // Nothing found at this path. This could mean it's genuinely a fresh
+        // database, OR it could mean the read silently failed in a way that
+        // returned no data. Never auto-write here — that would risk erasing
+        // real data. Instead, surface a button so a human confirms it.
+        setNeedsSeedConfirm(true);
       }
       setLoaded(true);
       setSaveError(false);
@@ -1312,6 +1316,15 @@ function App() {
 
   const logout = () => auth.signOut();
 
+  const initializeDatabase = () => {
+    if (!window.confirm("이 데이터베이스에 처음 사용할 샘플 데이터를 생성합니다. 계속할까요?")) return;
+    const seed = seedData();
+    db.ref(STORAGE_KEY)
+      .set(seed)
+      .then(() => setNeedsSeedConfirm(false))
+      .catch(() => setSaveError(true));
+  };
+
   const openPip = async () => {
     if (!("documentPictureInPicture" in window)) {
       alert("이 기능은 최신 Chrome, Edge, Firefox 브라우저의 PC 화면에서만 사용할 수 있어요.");
@@ -1453,6 +1466,15 @@ function App() {
         {saveError && (
           <div className="text-xs px-3 py-2 rounded" style={{ backgroundColor: "#FEE2E2", color: "#DC2626" }}>
             데이터베이스 동기화에 실패했습니다. 인터넷 연결과 Firebase 설정을 확인해 주세요.
+          </div>
+        )}
+
+        {needsSeedConfirm && !saveError && (
+          <div className="text-xs px-3 py-2 rounded flex items-center justify-between gap-3 flex-wrap" style={{ backgroundColor: "#FEF3C7", color: "#92400E" }}>
+            <span>이 데이터베이스 경로(<code style={{ fontFamily: FONT_MONO }}>{STORAGE_KEY}</code>)에서 데이터를 찾지 못했습니다. 기존 데이터가 있어야 한다면 Firebase 콘솔에서 규칙(Rules)과 데이터 경로를 먼저 확인해 주세요. 정말 처음 시작하는 경우에만 아래 버튼을 눌러주세요.</span>
+            <button onClick={initializeDatabase} className="text-xs font-semibold px-3 py-1.5 rounded text-white whitespace-nowrap" style={{ backgroundColor: "#D97706" }}>
+              초기 데이터 생성
+            </button>
           </div>
         )}
 
