@@ -90,7 +90,7 @@ const MEMBER_COLORS = [
   { bg: "#EA580C", light: "#FFEDD5" },
 ];
 
-const LEAVE_TYPES = ["연차", "반차", "휴무", "대체휴무(반차)", "대체휴무(연차)", "휴일근무", "무급"];
+const LEAVE_TYPES = ["연차", "반차", "휴무", "대체휴무(반차)", "대체휴무(연차)", "휴일근무", "무급", "경조휴무"];
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 const ACCENT = "#0D9488";
 const ACCENT_LIGHT = "#CCFBF1";
@@ -353,6 +353,8 @@ function chipStyle(type, color) {
       };
     case "휴일근무":
       return { backgroundColor: color.bg, color: "#fff", border: "2px solid #DC2626" };
+    case "경조휴무":
+      return { backgroundColor: "#fff", color: color.bg, border: `3px double ${color.bg}` };
     default:
       return {};
   }
@@ -992,7 +994,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
     setAttendeeIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
-  const needsNote = type === "연차" || type === "반차" || type === "대체휴무(반차)" || type === "대체휴무(연차)" || type === "휴일근무";
+  const needsNote = type === "연차" || type === "반차" || type === "대체휴무(반차)" || type === "대체휴무(연차)" || type === "휴일근무" || type === "경조휴무";
 
   const modalTitle = isCopy ? "새 일정으로 복사" : isEditing ? (mode === "company" ? "회사 일정 수정" : "일정 수정") : "일정 추가";
 
