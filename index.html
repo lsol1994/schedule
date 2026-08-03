@@ -12,6 +12,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   body { margin: 0; }
 </style>
@@ -20,7 +21,7 @@
 <div id="root"></div>
 
 <script type="text/babel">
-const { useState, useEffect, useMemo } = React;
+const { useState, useEffect, useMemo, useRef } = React;
 
 // ------------- Firebase (Realtime Database + Auth) -------------
 const firebaseConfig = {
@@ -41,9 +42,9 @@ const auth = firebase.auth();
 const APP_LOGIN_EMAIL = "team@cnacare-schedule.com";
 
 // ------------- inline icons (no external icon library needed) -------------
-function Icon({ children, size = 16, color = "currentColor" }) {
+function Icon({ children, size = 16, color = "currentColor", style }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
       {children}
     </svg>
   );
@@ -64,6 +65,15 @@ function PipIcon(props) {
     </Icon>
   );
 }
+function Upload(props) {
+  return (
+    <Icon {...props}>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="17 8 12 3 7 8" />
+      <line x1="12" y1="3" x2="12" y2="15" />
+    </Icon>
+  );
+}
 
 const STORAGE_KEY = "team_schedule_app_v1";
 
@@ -80,7 +90,7 @@ const MEMBER_COLORS = [
   { bg: "#EA580C", light: "#FFEDD5" },
 ];
 
-const LEAVE_TYPES = ["연차", "반차", "휴무", "대체휴무", "외부일정"];
+const LEAVE_TYPES = ["연차", "반차", "휴무", "대체휴무", "무급", "외부일정", "내부일정"];
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 const ACCENT = "#0D9488";
 const ACCENT_LIGHT = "#CCFBF1";
@@ -138,6 +148,23 @@ function getWeekGrid(currentDate) {
   const start = startOfWeek(currentDate);
   return Array.from({ length: 7 }, (_, i) => addDays(start, i));
 }
+function isNonWorkingDay(dateKey, holidayMap) {
+  const d = parseKey(dateKey);
+  const dow = d.getDay();
+  return dow === 0 || dow === 6 || !!holidayMap[dateKey];
+}
+function resolveRecurringDate(year, month, dayOfMonth, shiftDirection, holidayMap) {
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const day = Math.min(dayOfMonth, daysInMonth);
+  let d = new Date(year, month - 1, day);
+  const step = shiftDirection === "after" ? 1 : -1;
+  let guard = 0;
+  while (isNonWorkingDay(toKey(d), holidayMap) && guard < 14) {
+    d = addDays(d, step);
+    guard++;
+  }
+  return toKey(d);
+}
 // 2026년 대한민국 법정 공휴일 (대체공휴일 포함). 다음 해로 넘어가면 공휴일 관리에서 직접 갱신해 주세요.
 const KOREA_HOLIDAYS_2026 = [
   { startDate: "2026-01-01", endDate: "2026-01-01", name: "신정" },
@@ -177,7 +204,123 @@ function seedData() {
     { id: genId("evt"), title: "전체 워크샵", startDate: toKey(addDays(today, 7)), endDate: toKey(addDays(today, 8)), note: "전 직원 참석" },
   ];
   const holidays = KOREA_HOLIDAYS_2026.map((h) => ({ id: genId("hol"), ...h }));
-  return { members, schedules, companyEvents, holidays };
+  const recurringEvents = [
+    { id: genId("rec"), title: "급여일", dayOfMonth: 15, shiftDirection: "before", note: "휴무면 이전 평일로 이동", createdAt: toKey(today) },
+    { id: genId("rec"), title: "보험/세금/비용 납부일", dayOfMonth: 10, shiftDirection: "after", note: "휴무면 이후 평일로 이동", createdAt: toKey(today) },
+  ];
+  return { members, schedules, companyEvents, holidays, recurringEvents };
+}
+
+// ------------- excel import (계획 sheet -> schedules) -------------
+const EXCEL_TARGET_DEPT = "경영지원실";
+
+function parseExcelWorkbook(workbook, existingMembers) {
+  const results = [];
+  workbook.SheetNames.forEach((sheetName) => {
+    if (!sheetName.includes("계획")) return;
+    const m = sheetName.match(/(\d{4})\s*년\s*(\d{1,2})\s*월/);
+    if (!m) return;
+    const year = Number(m[1]);
+    const month = Number(m[2]);
+
+    const ws = workbook.Sheets[sheetName];
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+    const dayRow = aoa[4] || []; // row 5: day-of-month numbers
+    const dayCols = [];
+    dayRow.forEach((v, idx) => {
+      if (typeof v === "number" && v >= 1 && v <= 31) dayCols.push({ col: idx, day: v });
+    });
+    if (dayCols.length === 0) return;
+
+    let currentDept = null;
+    const peopleMap = new Map(); // name -> { title, marks: [{day, mark}] }
+    for (let r = 5; r < aoa.length; r++) {
+      const row = aoa[r] || [];
+      const deptCell = row[0];
+      if (deptCell !== null && deptCell !== undefined && String(deptCell).trim() !== "") {
+        currentDept = String(deptCell).trim();
+      }
+      const name = row[2];
+      if (!name || !currentDept || !currentDept.includes(EXCEL_TARGET_DEPT)) continue;
+      const nameStr = String(name).trim();
+      const title = row[3] ? String(row[3]).trim() : "";
+      if (!peopleMap.has(nameStr)) peopleMap.set(nameStr, { title, marks: [] });
+      const entry = peopleMap.get(nameStr);
+      dayCols.forEach(({ col, day }) => {
+        const mark = row[col];
+        if (mark !== null && mark !== undefined && String(mark).trim() !== "") {
+          entry.marks.push({ day, mark: String(mark).trim() });
+        }
+      });
+    }
+
+    if (peopleMap.size === 0) return;
+
+    const newNames = [];
+    const unrecognized = [];
+    const people = [];
+    peopleMap.forEach((info, name) => {
+      if (!existingMembers.some((mm) => mm.name === name) && !newNames.includes(name)) {
+        newNames.push(name);
+      }
+      const classified = [];
+      [...info.marks]
+        .sort((a, b) => a.day - b.day)
+        .forEach(({ day, mark }) => {
+          const dateObj = new Date(year, month - 1, day);
+          const dow = dateObj.getDay();
+          let type = null;
+          let isHolidayWork = false;
+          if (mark === "●") {
+            type = dow === 0 || dow === 6 ? "휴무" : "대체휴무";
+            isHolidayWork = type === "대체휴무";
+          } else if (mark === "★") {
+            type = "무급";
+          } else if (mark === "연차") {
+            type = "연차";
+          } else if (mark === "반차") {
+            type = "반차";
+          } else {
+            unrecognized.push({ name, day, mark });
+            return;
+          }
+          classified.push({ day, type, isHolidayWork });
+        });
+
+      const ranges = [];
+      classified.forEach((c) => {
+        const last = ranges[ranges.length - 1];
+        if (last && last.type === c.type && last.isHolidayWork === c.isHolidayWork && c.day === last.endDay + 1) {
+          last.endDay = c.day;
+        } else {
+          ranges.push({ type: c.type, isHolidayWork: c.isHolidayWork, startDay: c.day, endDay: c.day });
+        }
+      });
+
+      people.push({
+        name,
+        title: info.title,
+        ranges: ranges.map((r) => ({
+          type: r.type,
+          isHolidayWork: r.isHolidayWork,
+          startDate: toKey(new Date(year, month - 1, r.startDay)),
+          endDate: toKey(new Date(year, month - 1, r.endDay)),
+        })),
+      });
+    });
+
+    results.push({
+      batchKey: `excel-${year}-${pad(month)}-${EXCEL_TARGET_DEPT}`,
+      year,
+      month,
+      sheetName,
+      deptName: EXCEL_TARGET_DEPT,
+      people,
+      newNames,
+      unrecognized,
+    });
+  });
+  return results;
 }
 
 // ------------- style helpers -------------
@@ -199,6 +342,14 @@ function chipStyle(type, color) {
       };
     case "외부일정":
       return { backgroundColor: "#fff", color: color.bg, border: `1.5px dashed ${color.bg}` };
+    case "내부일정":
+      return { backgroundColor: "#fff", color: color.bg, border: `1.5px dotted ${color.bg}` };
+    case "무급":
+      return {
+        backgroundImage: `repeating-linear-gradient(45deg, ${color.bg}, ${color.bg} 5px, rgba(0,0,0,0.25) 5px, rgba(0,0,0,0.25) 10px)`,
+        color: "#fff",
+        border: "1px solid transparent",
+      };
     default:
       return {};
   }
@@ -213,7 +364,7 @@ function ScheduleChip({ schedule, member, onClick }) {
   const color = MEMBER_COLORS[hashColorIndex(member?.id || "x")];
   const style = chipStyle(schedule.type, color);
   const flag = schedule.type === "대체휴무" && schedule.isHolidayWork ? "*" : "";
-  const label = schedule.type === "외부일정" ? (schedule.note ? schedule.note : "외부일정") : `${schedule.type}${flag}`;
+  const label = schedule.type === "외부일정" || schedule.type === "내부일정" ? (schedule.note ? schedule.note : schedule.type) : `${schedule.type}${flag}`;
   return (
     <div
       onClick={(e) => {
@@ -240,7 +391,7 @@ function CompanyEventChip({ event, onClick }) {
       className="text-xs px-1.5 py-1 rounded mb-1 truncate cursor-pointer font-bold leading-tight hover:opacity-90"
       style={companyEventStyle()}
     >
-      📌 {event.title}
+      {event.isRecurring ? "🔁" : "📌"} {event.title}
     </div>
   );
 }
@@ -589,6 +740,102 @@ function HolidayManager({ holidays, onAdd, onDelete }) {
   );
 }
 
+function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
+  const [open, setOpen] = useState(true);
+  const [title, setTitle] = useState("");
+  const [dayOfMonth, setDayOfMonth] = useState(15);
+  const [shiftDirection, setShiftDirection] = useState("before");
+  const [note, setNote] = useState("");
+  const [editingId, setEditingId] = useState(null);
+
+  const resetForm = () => {
+    setTitle("");
+    setDayOfMonth(15);
+    setShiftDirection("before");
+    setNote("");
+    setEditingId(null);
+  };
+
+  const submit = () => {
+    if (!title.trim()) return;
+    const data = {
+      title: title.trim(),
+      dayOfMonth: Math.min(31, Math.max(1, Number(dayOfMonth) || 1)),
+      shiftDirection,
+      note: note.trim(),
+    };
+    if (editingId) {
+      onUpdate(editingId, data);
+    } else {
+      onAdd(data);
+    }
+    resetForm();
+  };
+
+  const startEdit = (r) => {
+    setEditingId(r.id);
+    setTitle(r.title);
+    setDayOfMonth(r.dayOfMonth);
+    setShiftDirection(r.shiftDirection);
+    setNote(r.note || "");
+  };
+
+  return (
+    <div className="bg-white border rounded-lg p-4" style={{ borderColor: "#EEF0F3" }}>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-bold" style={{ color: "#111827" }}>반복 일정 관리</h3>
+        <button onClick={() => setOpen(!open)} className="text-xs font-semibold px-1.5 py-0.5" style={{ color: ACCENT }}>{open ? "숨기기" : "펼치기"}</button>
+      </div>
+      {open && (
+        <>
+          <p className="text-xs mb-2" style={{ color: "#9CA3AF" }}>
+            매월 정해진 날짜에 자동으로 생성돼요. 그 날짜가 휴무(주말·공휴일)면 이전/이후 평일로 옮겨져요. 등록한 날짜부터 적용되며, 그 이전 달에는 생성되지 않아요.
+          </p>
+          <div className="space-y-1.5 mb-3">
+            {recurringEvents.length === 0 && <p className="text-xs" style={{ color: "#9CA3AF" }}>등록된 반복 일정이 없습니다.</p>}
+            {recurringEvents.map((r) => (
+              <div key={r.id} className="flex items-center justify-between text-xs py-1">
+                <span>
+                  <span className="font-semibold">{r.title}</span>
+                  <span style={{ color: "#9CA3AF" }}>
+                    {" "}
+                    (매월 {r.dayOfMonth}일, 휴무 시 {r.shiftDirection === "after" ? "이후" : "이전"} 평일{r.createdAt ? `, ${r.createdAt}부터 적용` : ""})
+                  </span>
+                </span>
+                <span className="flex items-center gap-2">
+                  <button onClick={() => startEdit(r)} className="p-1.5 -m-1.5"><Pencil size={12} color="#9CA3AF" /></button>
+                  <button onClick={() => onDelete(r.id)} className="p-1.5 -m-1.5"><Trash2 size={12} color="#9CA3AF" /></button>
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="space-y-1.5 pt-2 border-t" style={{ borderColor: "#F3F4F6" }}>
+            <input placeholder="일정명 (예: 급여일)" value={title} onChange={(e) => setTitle(e.target.value)} className="w-full text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>매월</span>
+              <input type="number" min="1" max="31" value={dayOfMonth} onChange={(e) => setDayOfMonth(e.target.value)} className="w-14 text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+              <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>일 · 휴무 시</span>
+              <select value={shiftDirection} onChange={(e) => setShiftDirection(e.target.value)} className="flex-1 text-xs border rounded px-1.5 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB" }}>
+                <option value="before">이전 평일</option>
+                <option value="after">이후 평일</option>
+              </select>
+            </div>
+            <input placeholder="메모 (선택)" value={note} onChange={(e) => setNote(e.target.value)} className="w-full text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
+            <div className="flex items-center gap-1.5">
+              <button onClick={submit} className="flex-1 text-xs font-semibold px-2 py-1.5 rounded text-white" style={{ backgroundColor: ACCENT }}>
+                {editingId ? "수정 저장" : "추가"}
+              </button>
+              {editingId && (
+                <button onClick={resetForm} className="text-xs font-semibold px-2 py-1.5" style={{ color: "#9CA3AF" }}>취소</button>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDate, defaultMemberId, onSaveSchedule, onDeleteSchedule, onSaveCompanyEvent, onDeleteCompanyEvent, onQuickAddMember }) {
   const [mode, setMode] = useState("personal"); // "personal" | "company"
   // shared date range (used by both modes)
@@ -605,9 +852,14 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
   // company event fields
   const [title, setTitle] = useState("");
   const [companyNote, setCompanyNote] = useState("");
+  // 외부일정 attendees (informational only, not shown on the calendar)
+  const [attendeeIds, setAttendeeIds] = useState([]);
+  // copy-as-new-entry mode
+  const [isCopy, setIsCopy] = useState(false);
 
   useEffect(() => {
     if (!open) return;
+    setIsCopy(false);
     if (initial && initialKind === "company") {
       setMode("company");
       setTitle(initial.title);
@@ -622,6 +874,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       setType(initial.type);
       setNote(initial.note || "");
       setIsHolidayWork(!!initial.isHolidayWork);
+      setAttendeeIds(initial.attendeeIds || []);
     } else {
       setMode("personal");
       setMemberId(defaultMemberId || members[0]?.id || "");
@@ -633,6 +886,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       setIsHolidayWork(false);
       setTitle("");
       setCompanyNote("");
+      setAttendeeIds([]);
     }
     setShowQuickAdd(false);
   }, [open, initial, initialKind, defaultDate, defaultMemberId]);
@@ -644,20 +898,21 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
     if (!memberId || !startDate) return;
     const end = endDate && endDate >= startDate ? endDate : startDate;
     onSaveSchedule({
-      id: initial?.id || genId("sch"),
+      id: initial?.id && !isCopy ? initial.id : genId("sch"),
       memberId,
       startDate,
       endDate: end,
       type,
       note: note.trim(),
       isHolidayWork: type === "대체휴무" ? isHolidayWork : false,
+      attendeeIds: type === "외부일정" ? attendeeIds : [],
     });
   };
   const submitCompany = () => {
     if (!title.trim() || !startDate) return;
     const end = endDate && endDate >= startDate ? endDate : startDate;
     onSaveCompanyEvent({
-      id: initial?.id || genId("evt"),
+      id: initial?.id && !isCopy ? initial.id : genId("evt"),
       title: title.trim(),
       startDate,
       endDate: end,
@@ -671,10 +926,13 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
     setQuickName("");
     setShowQuickAdd(false);
   };
+  const toggleAttendee = (id) => {
+    setAttendeeIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
 
-  const needsNote = type === "연차" || type === "반차" || type === "대체휴무";
+  const needsNote = type === "연차" || type === "반차" || type === "대체휴무" || type === "외부일정" || type === "내부일정";
 
-  const modalTitle = isEditing ? (mode === "company" ? "회사 일정 수정" : "일정 수정") : "일정 추가";
+  const modalTitle = isCopy ? "새 일정으로 복사" : isEditing ? (mode === "company" ? "회사 일정 수정" : "일정 수정") : "일정 추가";
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onClose}>
@@ -738,7 +996,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
 
             <div>
               <label className="text-xs font-semibold block mb-1.5" style={{ color: "#374151" }}>종류</label>
-              <div className="grid grid-cols-3 gap-1.5">
+              <div className="grid grid-cols-4 gap-1.5">
                 {LEAVE_TYPES.map((t) => (
                   <button
                     key={t}
@@ -772,6 +1030,28 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
                 style={{ borderColor: "#E5E7EB" }}
               />
             </div>
+
+            {type === "외부일정" && (
+              <div>
+                <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>
+                  같이 참석하는 팀원 <span style={{ color: "#9CA3AF", fontWeight: 400 }}>(캘린더에는 안 뜨고, 상세보기에서만 보여요)</span>
+                </label>
+                <div className="border rounded p-2 space-y-1 overflow-y-auto" style={{ borderColor: "#E5E7EB", maxHeight: 120 }}>
+                  {members.filter((m) => m.id !== memberId).length === 0 ? (
+                    <p className="text-xs" style={{ color: "#9CA3AF" }}>선택 가능한 다른 팀원이 없습니다.</p>
+                  ) : (
+                    members
+                      .filter((m) => m.id !== memberId)
+                      .map((m) => (
+                        <label key={m.id} className="flex items-center gap-2 text-xs" style={{ color: "#374151" }}>
+                          <input type="checkbox" checked={attendeeIds.includes(m.id)} onChange={() => toggleAttendee(m.id)} />
+                          {m.name}
+                        </label>
+                      ))
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-3">
@@ -809,14 +1089,23 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
           </div>
         )}
 
+        {isCopy && (
+          <p className="text-xs mt-3" style={{ color: ACCENT }}>복사됨 — 저장하면 원본은 그대로 두고 새 일정으로 추가돼요.</p>
+        )}
+
         <div className="flex items-center justify-between mt-5">
-          <div>
-            {isEditing && mode === "personal" && (
+          <div className="flex items-center gap-3">
+            {isEditing && !isCopy && (
+              <button onClick={() => setIsCopy(true)} className="text-xs font-semibold flex items-center gap-1" style={{ color: ACCENT }}>
+                <Upload size={14} style={{ transform: "rotate(90deg)" }} /> 복사
+              </button>
+            )}
+            {isEditing && !isCopy && mode === "personal" && (
               <button onClick={() => onDeleteSchedule(initial.id)} className="text-xs font-semibold flex items-center gap-1" style={{ color: "#DC2626" }}>
                 <Trash2 size={14} /> 삭제
               </button>
             )}
-            {isEditing && mode === "company" && (
+            {isEditing && !isCopy && mode === "company" && (
               <button onClick={() => onDeleteCompanyEvent(initial.id)} className="text-xs font-semibold flex items-center gap-1" style={{ color: "#DC2626" }}>
                 <Trash2 size={14} /> 삭제
               </button>
@@ -990,6 +1279,159 @@ function ChangePasswordModal({ open, onClose }) {
   );
 }
 
+function ExcelImportModal({ preview, busy, onCancel, onConfirm }) {
+  if (!preview) return null;
+  const totalEntries = preview.reduce((acc, s) => acc + s.people.reduce((a2, p) => a2 + p.ranges.length, 0), 0);
+  const allNewNames = [...new Set(preview.flatMap((s) => s.newNames))];
+  const allUnrecognized = preview.flatMap((s) => s.unrecognized);
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onCancel}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6 overflow-y-auto" style={{ maxHeight: "85vh" }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-base font-bold" style={{ color: "#111827" }}>엑셀 일정 반영 확인</h3>
+          <button onClick={onCancel} className="p-1 -m-1"><X size={18} color="#9CA3AF" /></button>
+        </div>
+
+        <div className="space-y-3 text-xs" style={{ color: "#374151" }}>
+          {preview.map((sheet) => (
+            <div key={sheet.batchKey} className="border rounded p-3" style={{ borderColor: "#EEF0F3" }}>
+              <p className="font-bold mb-2">
+                {sheet.year}년 {sheet.month}월 · {sheet.deptName} <span style={{ color: "#9CA3AF", fontWeight: 400 }}>({sheet.sheetName})</span>
+              </p>
+              {sheet.people.map((p) => (
+                <p key={p.name} className="mb-1">
+                  <span className="font-semibold">{p.name}</span>
+                  {p.title ? ` (${p.title})` : ""} — {p.ranges.length}건
+                </p>
+              ))}
+            </div>
+          ))}
+
+          {allNewNames.length > 0 && (
+            <div className="rounded p-3" style={{ backgroundColor: "#F0FDFA", color: "#0F766E" }}>
+              새로 추가될 팀원: <span className="font-semibold">{allNewNames.join(", ")}</span> (연차 15일 기본값으로 등록되며, 팀원 관리에서 나중에 수정할 수 있어요)
+            </div>
+          )}
+
+          {allUnrecognized.length > 0 && (
+            <div className="rounded p-3" style={{ backgroundColor: "#FEF3C7", color: "#92400E" }}>
+              인식하지 못한 표시 {allUnrecognized.length}건이 있어 반영에서 제외돼요. 예: {allUnrecognized.slice(0, 4).map((u) => `${u.name} ${u.day}일 "${u.mark}"`).join(", ")}
+              {allUnrecognized.length > 4 ? " 등" : ""}
+            </div>
+          )}
+
+          <p style={{ color: "#6B7280" }}>
+            총 {totalEntries}건의 일정이 등록됩니다. 같은 연도·월·부서로 이미 가져온 적이 있다면 그때 가져온 항목은 이번 내용으로 교체돼요. 직접 등록한 개인 일정에는 영향을 주지 않아요.
+          </p>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button onClick={onCancel} className="text-xs font-semibold px-3 py-2 rounded border" style={{ borderColor: "#E5E7EB", color: "#374151" }}>취소</button>
+          <button onClick={onConfirm} disabled={busy} className="text-xs font-semibold px-3 py-2 rounded text-white disabled:opacity-50" style={{ backgroundColor: ACCENT }}>
+            {busy ? "반영 중..." : "반영하기"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecurringInfoModal({ target, onClose, onDeleteTemplate, onSetOverride }) {
+  const [mode, setMode] = useState("view"); // "view" | "edit"
+  const [date, setDate] = useState("");
+  const [title, setTitle] = useState("");
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    if (target) {
+      setMode("view");
+      setDate(target.date || "");
+      setTitle(target.title || "");
+      setNote(target.note || "");
+    }
+  }, [target]);
+
+  if (!target) return null;
+
+  const startEdit = () => {
+    setDate(target.date || "");
+    setTitle(target.title || "");
+    setNote(target.note || "");
+    setMode("edit");
+  };
+  const saveOverride = () => {
+    if (!date) return;
+    onSetOverride(target.recurringId, target.yearMonth, { date, title: title.trim(), note: note.trim(), skip: false });
+    onClose();
+  };
+  const skipThisMonth = () => {
+    if (!window.confirm(`${target.yearMonth} 달만 건너뛸까요? 다른 달은 그대로 유지돼요.`)) return;
+    onSetOverride(target.recurringId, target.yearMonth, { skip: true });
+    onClose();
+  };
+  const revertThisMonth = () => {
+    onSetOverride(target.recurringId, target.yearMonth, null);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-base font-bold" style={{ color: "#111827" }}>🔁 {target.title}</h3>
+          <button onClick={onClose} className="p-1 -m-1"><X size={18} color="#9CA3AF" /></button>
+        </div>
+
+        {mode === "view" ? (
+          <>
+            <p className="text-xs mb-1" style={{ color: "#6B7280" }}>
+              "반복 일정 관리"에서 매월 자동으로 생성돼요.
+              {target.isOverridden && <span style={{ color: ACCENT, fontWeight: 600 }}> (이 달은 따로 수정됨)</span>}
+            </p>
+            {target.note && <p className="text-xs mb-3" style={{ color: "#374151" }}>{target.note}</p>}
+            <div className="space-y-2 mt-4">
+              <button onClick={startEdit} className="w-full text-xs font-semibold py-2 rounded text-white" style={{ backgroundColor: ACCENT }}>
+                이 달만 날짜·내용 수정
+              </button>
+              <button onClick={skipThisMonth} className="w-full text-xs font-semibold py-2 rounded border" style={{ borderColor: "#E5E7EB", color: "#374151" }}>
+                이 달만 건너뛰기
+              </button>
+              {target.isOverridden && (
+                <button onClick={revertThisMonth} className="w-full text-xs font-semibold py-2 rounded border" style={{ borderColor: "#E5E7EB", color: "#374151" }}>
+                  이 달 수정 취소 (기본값으로)
+                </button>
+              )}
+              <button onClick={() => onDeleteTemplate(target.recurringId)} className="w-full text-xs font-semibold py-2 rounded" style={{ color: "#DC2626" }}>
+                반복 일정 전체 삭제
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-xs" style={{ color: "#9CA3AF" }}>{target.yearMonth} 달에만 적용돼요. 다른 달은 그대로 유지돼요.</p>
+            <div>
+              <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>이 달 날짜</label>
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>일정명</label>
+              <input value={title} onChange={(e) => setTitle(e.target.value)} className="w-full text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>메모</label>
+              <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} className="w-full text-sm border rounded px-2 py-1.5 resize-none" style={{ borderColor: "#E5E7EB" }} />
+            </div>
+            <div className="flex items-center justify-end gap-2 mt-2">
+              <button onClick={() => setMode("view")} className="text-xs font-semibold px-3 py-2 rounded border" style={{ borderColor: "#E5E7EB", color: "#374151" }}>취소</button>
+              <button onClick={saveOverride} disabled={!date} className="text-xs font-semibold px-3 py-2 rounded text-white disabled:opacity-40" style={{ backgroundColor: ACCENT }}>저장</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ------------- main app -------------
 function MobileDayAgenda({ schedules, companyEvents, holidayName, members, onEditSchedule, onEditCompanyEvent }) {
   const today = new Date();
@@ -1042,6 +1484,7 @@ function App() {
   const [schedules, setSchedules] = useState([]);
   const [companyEvents, setCompanyEvents] = useState([]);
   const [holidays, setHolidays] = useState([]);
+  const [recurringEvents, setRecurringEvents] = useState([]);
   const [currentDate, setCurrentDate] = useState(new Date());
   const [view, setView] = useState("month");
   const [filterMembers, setFilterMembers] = useState(new Set());
@@ -1052,10 +1495,14 @@ function App() {
   const [modalDefaultDate, setModalDefaultDate] = useState(null);
   const [modalDefaultMemberId, setModalDefaultMemberId] = useState(null);
   const [dayDetailKey, setDayDetailKey] = useState(null);
+  const [recurringInfoTarget, setRecurringInfoTarget] = useState(null);
   const [mobileShowFullMonth, setMobileShowFullMonth] = useState(false);
   const [pipRoot, setPipRoot] = useState(null);
   const [saveError, setSaveError] = useState(false);
   const [needsSeedConfirm, setNeedsSeedConfirm] = useState(false);
+  const [excelPreview, setExcelPreview] = useState(null);
+  const [excelBusy, setExcelBusy] = useState(false);
+  const fileInputRef = useRef(null);
 
   // track login state (persists across page reloads automatically)
   useEffect(() => {
@@ -1077,6 +1524,7 @@ function App() {
         setSchedules(data.schedules || []);
         setCompanyEvents(data.companyEvents || []);
         setHolidays(data.holidays || []);
+        setRecurringEvents(data.recurringEvents || []);
         setNeedsSeedConfirm(false);
       } else {
         // Nothing found at this path. This could mean it's genuinely a fresh
@@ -1152,6 +1600,49 @@ function App() {
     return map;
   }, [holidays]);
 
+  const recurringEventMap = useMemo(() => {
+    const map = {};
+    const today = new Date();
+    const startYear = today.getFullYear() - 1;
+    const endYear = today.getFullYear() + 2;
+    recurringEvents.forEach((tpl) => {
+      for (let y = startYear; y <= endYear; y++) {
+        for (let mo = 1; mo <= 12; mo++) {
+          const ym = `${y}-${pad(mo)}`;
+          const override = (tpl.overrides || {})[ym];
+          if (override && override.skip) continue;
+          const dateKey = override && override.date ? override.date : resolveRecurringDate(y, mo, tpl.dayOfMonth, tpl.shiftDirection, holidayMap);
+          if (tpl.createdAt && dateKey < tpl.createdAt) continue;
+          const title = override && override.title ? override.title : tpl.title;
+          const note = override && override.note !== undefined ? override.note : tpl.note || "";
+          if (!map[dateKey]) map[dateKey] = [];
+          map[dateKey].push({
+            id: `${tpl.id}_${ym}`,
+            title,
+            note,
+            date: dateKey,
+            yearMonth: ym,
+            isRecurring: true,
+            isOverridden: !!override,
+            recurringId: tpl.id,
+          });
+        }
+      }
+    });
+    return map;
+  }, [recurringEvents, holidayMap]);
+
+  const displayCompanyEventMap = useMemo(() => {
+    const map = {};
+    Object.keys(companyEventMap).forEach((k) => {
+      map[k] = [...companyEventMap[k]];
+    });
+    Object.keys(recurringEventMap).forEach((k) => {
+      map[k] = [...(map[k] || []), ...recurringEventMap[k]];
+    });
+    return map;
+  }, [companyEventMap, recurringEventMap]);
+
   const goPrev = () => setCurrentDate((d) => (view === "month" ? new Date(d.getFullYear(), d.getMonth() - 1, 1) : addDays(d, -7)));
   const goNext = () => setCurrentDate((d) => (view === "month" ? new Date(d.getFullYear(), d.getMonth() + 1, 1) : addDays(d, 7)));
   const goToday = () => setCurrentDate(new Date());
@@ -1189,6 +1680,11 @@ function App() {
     setDayDetailKey(null);
   };
   const openEditCompanyEvent = (event) => {
+    if (event.isRecurring) {
+      setRecurringInfoTarget(event);
+      setDayDetailKey(null);
+      return;
+    }
     setEditingItem(event);
     setEditingKind("company");
     setModalOpen(true);
@@ -1205,6 +1701,7 @@ function App() {
       schedules: overrides.schedules ?? schedules,
       companyEvents: overrides.companyEvents ?? companyEvents,
       holidays: overrides.holidays ?? holidays,
+      recurringEvents: overrides.recurringEvents ?? recurringEvents,
     };
     db.ref(STORAGE_KEY)
       .set(payload)
@@ -1248,6 +1745,37 @@ function App() {
     const newHolidays = holidays.filter((h) => h.id !== id);
     setHolidays(newHolidays);
     pushToFirebase({ holidays: newHolidays });
+  };
+  const addRecurringEvent = (data) => {
+    const newRecurring = { id: genId("rec"), createdAt: toKey(new Date()), ...data };
+    const next = [...recurringEvents, newRecurring];
+    setRecurringEvents(next);
+    pushToFirebase({ recurringEvents: next });
+  };
+  const updateRecurringEvent = (id, data) => {
+    const next = recurringEvents.map((r) => (r.id === id ? { ...r, ...data } : r));
+    setRecurringEvents(next);
+    pushToFirebase({ recurringEvents: next });
+  };
+  const deleteRecurringEvent = (id) => {
+    if (!window.confirm("이 반복 일정을 삭제하면 앞으로 생성되는 모든 달의 항목이 사라집니다. 계속할까요?")) return;
+    const next = recurringEvents.filter((r) => r.id !== id);
+    setRecurringEvents(next);
+    pushToFirebase({ recurringEvents: next });
+  };
+  const setRecurringOverride = (recurringId, yearMonth, overrideData) => {
+    const next = recurringEvents.map((r) => {
+      if (r.id !== recurringId) return r;
+      const overrides = { ...(r.overrides || {}) };
+      if (overrideData === null) {
+        delete overrides[yearMonth];
+      } else {
+        overrides[yearMonth] = overrideData;
+      }
+      return { ...r, overrides };
+    });
+    setRecurringEvents(next);
+    pushToFirebase({ recurringEvents: next });
   };
   const addMember = (data) => {
     const newMember = { id: genId("mem"), ...data };
@@ -1303,6 +1831,12 @@ function App() {
         guard++;
       }
     });
+    Object.keys(recurringEventMap).forEach((k) => {
+      const d = parseKey(k);
+      recurringEventMap[k].forEach((ev) => {
+        companyRows.push([k, WEEKDAYS[d.getDay()], "(전사·반복)", ev.title, "", (ev.note || "").replace(/\r?\n/g, " ")]);
+      });
+    });
     const rows = [...scheduleRows, ...companyRows].sort((a, b) => a[0].localeCompare(b[0]));
     const csv = "\uFEFF" + [header, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -1325,6 +1859,72 @@ function App() {
       .set(seed)
       .then(() => setNeedsSeedConfirm(false))
       .catch(() => setSaveError(true));
+  };
+
+  const handleExcelFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setExcelBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const results = parseExcelWorkbook(wb, members);
+      if (results.length === 0) {
+        alert('시트 이름에 "계획"이 포함된 시트를 찾지 못했거나, 그 안에서 "경영지원실" 데이터를 찾지 못했습니다. 파일 구조를 확인해 주세요.');
+      } else {
+        setExcelPreview(results);
+      }
+    } catch (err) {
+      alert("엑셀 파일을 읽는 중 문제가 발생했습니다. 파일 형식을 확인해 주세요.");
+    } finally {
+      setExcelBusy(false);
+    }
+  };
+
+  const applyExcelImport = () => {
+    if (!excelPreview) return;
+    setExcelBusy(true);
+    let nextMembers = [...members];
+    excelPreview.forEach((sheet) => {
+      sheet.newNames.forEach((name) => {
+        if (!nextMembers.some((mm) => mm.name === name)) {
+          nextMembers.push({ id: genId("mem"), name, annualTotal: 15 });
+        }
+      });
+    });
+    const nameToId = {};
+    nextMembers.forEach((mm) => {
+      nameToId[mm.name] = mm.id;
+    });
+
+    const batchKeys = excelPreview.map((s) => s.batchKey);
+    let nextSchedules = schedules.filter((s) => !batchKeys.includes(s.importBatch));
+
+    excelPreview.forEach((sheet) => {
+      sheet.people.forEach((person) => {
+        const memberId = nameToId[person.name];
+        if (!memberId) return;
+        person.ranges.forEach((r) => {
+          nextSchedules.push({
+            id: genId("sch"),
+            memberId,
+            startDate: r.startDate,
+            endDate: r.endDate,
+            type: r.type,
+            note: "",
+            isHolidayWork: r.isHolidayWork,
+            importBatch: sheet.batchKey,
+          });
+        });
+      });
+    });
+
+    setMembers(nextMembers);
+    setSchedules(nextSchedules);
+    pushToFirebase({ members: nextMembers, schedules: nextSchedules });
+    setExcelBusy(false);
+    setExcelPreview(null);
   };
 
   const openPip = async () => {
@@ -1370,14 +1970,14 @@ function App() {
     pipRoot.render(
       <PipContent
         schedules={scheduleMap[todayKey] || []}
-        companyEvents={companyEventMap[todayKey] || []}
+        companyEvents={displayCompanyEventMap[todayKey] || []}
         holidayName={holidayMap[todayKey]}
         members={members}
         onEditSchedule={openEditSchedule}
         onEditCompanyEvent={openEditCompanyEvent}
       />
     );
-  }, [pipRoot, scheduleMap, companyEventMap, holidayMap, members]);
+  }, [pipRoot, scheduleMap, displayCompanyEventMap, holidayMap, members]);
 
   const titleText =
     view === "month"
@@ -1434,6 +2034,15 @@ function App() {
               </div>
               <button onClick={exportCSV} className="text-xs font-semibold px-3 py-2 rounded border flex items-center gap-1" style={{ borderColor: "#E5E7EB", color: "#374151" }}>
                 <Download size={14} /> CSV 내보내기
+              </button>
+              <input type="file" accept=".xlsx,.xls" ref={fileInputRef} onChange={handleExcelFile} className="hidden" />
+              <button
+                onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                disabled={excelBusy}
+                className="text-xs font-semibold px-3 py-2 rounded border flex items-center gap-1 disabled:opacity-50"
+                style={{ borderColor: "#E5E7EB", color: "#374151" }}
+              >
+                <Upload size={14} /> {excelBusy ? "분석 중..." : "엑셀 업로드"}
               </button>
               <button
                 onClick={openPip}
@@ -1496,7 +2105,7 @@ function App() {
                 <MonthView
                   currentDate={currentDate}
                   scheduleMap={scheduleMap}
-                  companyEventMap={companyEventMap}
+                  companyEventMap={displayCompanyEventMap}
                   holidayMap={holidayMap}
                   members={members}
                   onAdd={openAddModal}
@@ -1508,7 +2117,7 @@ function App() {
                 <WeekView
                   currentDate={currentDate}
                   scheduleMap={scheduleMap}
-                  companyEventMap={companyEventMap}
+                  companyEventMap={displayCompanyEventMap}
                   holidayMap={holidayMap}
                   members={members}
                   onAdd={openAddModal}
@@ -1526,7 +2135,7 @@ function App() {
                   <MonthView
                     currentDate={currentDate}
                     scheduleMap={scheduleMap}
-                    companyEventMap={companyEventMap}
+                    companyEventMap={displayCompanyEventMap}
                     holidayMap={holidayMap}
                     members={members}
                     onAdd={openAddModal}
@@ -1546,7 +2155,7 @@ function App() {
                 <>
                   <MobileDayAgenda
                     schedules={scheduleMap[toKey(new Date())] || []}
-                    companyEvents={companyEventMap[toKey(new Date())] || []}
+                    companyEvents={displayCompanyEventMap[toKey(new Date())] || []}
                     holidayName={holidayMap[toKey(new Date())]}
                     members={members}
                     onEditSchedule={openEditSchedule}
@@ -1566,6 +2175,7 @@ function App() {
           <div className="lg:col-span-1 space-y-4">
             <MemberManager members={members} onAdd={addMember} onUpdate={updateMember} onDelete={deleteMember} />
             <HolidayManager holidays={holidays} onAdd={addHoliday} onDelete={deleteHoliday} />
+            <RecurringEventManager recurringEvents={recurringEvents} onAdd={addRecurringEvent} onUpdate={updateRecurringEvent} onDelete={deleteRecurringEvent} />
           </div>
         </div>
       </div>
@@ -1588,7 +2198,7 @@ function App() {
       <DayDetailModal
         dateKey={dayDetailKey}
         schedules={scheduleMap[dayDetailKey] || []}
-        companyEvents={companyEventMap[dayDetailKey] || []}
+        companyEvents={displayCompanyEventMap[dayDetailKey] || []}
         members={members}
         onClose={() => setDayDetailKey(null)}
         onEdit={openEditSchedule}
@@ -1600,6 +2210,18 @@ function App() {
       />
 
       <ChangePasswordModal open={changePasswordOpen} onClose={() => setChangePasswordOpen(false)} />
+
+      <ExcelImportModal preview={excelPreview} busy={excelBusy} onCancel={() => setExcelPreview(null)} onConfirm={applyExcelImport} />
+
+      <RecurringInfoModal
+        target={recurringInfoTarget}
+        onClose={() => setRecurringInfoTarget(null)}
+        onDeleteTemplate={(id) => {
+          deleteRecurringEvent(id);
+          setRecurringInfoTarget(null);
+        }}
+        onSetOverride={setRecurringOverride}
+      />
     </div>
   );
 }
