@@ -90,7 +90,7 @@ const MEMBER_COLORS = [
   { bg: "#EA580C", light: "#FFEDD5" },
 ];
 
-const LEAVE_TYPES = ["연차", "반차", "휴무", "대체휴무", "무급", "외부일정", "내부일정"];
+const LEAVE_TYPES = ["연차", "반차", "휴무", "대체휴무", "무급"];
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 const ACCENT = "#0D9488";
 const ACCENT_LIGHT = "#CCFBF1";
@@ -201,7 +201,7 @@ function seedData() {
     { id: genId("sch"), memberId: m2.id, startDate: toKey(addDays(today, -2)), endDate: toKey(addDays(today, -2)), type: "휴무", note: "", isHolidayWork: false },
   ];
   const companyEvents = [
-    { id: genId("evt"), title: "전체 워크샵", startDate: toKey(addDays(today, 7)), endDate: toKey(addDays(today, 8)), note: "전 직원 참석" },
+    { id: genId("evt"), title: "전체 워크샵", startDate: toKey(addDays(today, 7)), endDate: toKey(addDays(today, 8)), note: "전 직원 참석", kind: "internal", attendeeIds: [] },
   ];
   const holidays = KOREA_HOLIDAYS_2026.map((h) => ({ id: genId("hol"), ...h }));
   const recurringEvents = [
@@ -355,7 +355,10 @@ function chipStyle(type, color) {
   }
 }
 
-function companyEventStyle() {
+function companyEventStyle(kind) {
+  if (kind === "external") {
+    return { backgroundColor: "#fff", color: ACCENT, border: `1.5px dashed ${ACCENT}` };
+  }
   return { backgroundColor: ACCENT, color: "#fff", border: "1px solid transparent" };
 }
 
@@ -364,7 +367,7 @@ function ScheduleChip({ schedule, member, onClick }) {
   const color = MEMBER_COLORS[hashColorIndex(member?.id || "x")];
   const style = chipStyle(schedule.type, color);
   const flag = schedule.type === "대체휴무" && schedule.isHolidayWork ? "*" : "";
-  const label = schedule.type === "외부일정" || schedule.type === "내부일정" ? (schedule.note ? schedule.note : schedule.type) : `${schedule.type}${flag}`;
+  const label = `${schedule.type}${flag}`;
   return (
     <div
       onClick={(e) => {
@@ -381,6 +384,7 @@ function ScheduleChip({ schedule, member, onClick }) {
 }
 
 function CompanyEventChip({ event, onClick }) {
+  const icon = event.isRecurring ? "🔁" : event.kind === "external" ? "🧳" : "📌";
   return (
     <div
       onClick={(e) => {
@@ -389,9 +393,9 @@ function CompanyEventChip({ event, onClick }) {
       }}
       title={event.note || event.title}
       className="text-xs px-1.5 py-1 rounded mb-1 truncate cursor-pointer font-bold leading-tight hover:opacity-90"
-      style={companyEventStyle()}
+      style={companyEventStyle(event.kind)}
     >
-      {event.isRecurring ? "🔁" : "📌"} {event.title}
+      {icon} {event.title}
     </div>
   );
 }
@@ -408,8 +412,12 @@ function Legend() {
         </div>
       ))}
       <div className="flex items-center gap-1.5">
-        <span className="inline-block rounded" style={{ width: 22, height: 14, ...companyEventStyle() }} />
-        <span>회사 일정</span>
+        <span className="inline-block rounded" style={{ width: 22, height: 14, ...companyEventStyle("internal") }} />
+        <span>회사 내부일정</span>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <span className="inline-block rounded" style={{ width: 22, height: 14, ...companyEventStyle("external") }} />
+        <span>회사 외부일정</span>
       </div>
       <div className="flex items-center gap-1.5">
         <span className="inline-block rounded-full" style={{ width: 8, height: 8, backgroundColor: "#DC2626" }} />
@@ -852,7 +860,8 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
   // company event fields
   const [title, setTitle] = useState("");
   const [companyNote, setCompanyNote] = useState("");
-  // 외부일정 attendees (informational only, not shown on the calendar)
+  const [companyKind, setCompanyKind] = useState("internal"); // "internal" | "external"
+  // 외부(external) company event attendees — informational, visible only when opening the entry
   const [attendeeIds, setAttendeeIds] = useState([]);
   // copy-as-new-entry mode
   const [isCopy, setIsCopy] = useState(false);
@@ -866,6 +875,8 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       setStartDate(initial.startDate);
       setEndDate(initial.endDate);
       setCompanyNote(initial.note || "");
+      setCompanyKind(initial.kind || "internal");
+      setAttendeeIds(initial.attendeeIds || []);
     } else if (initial && initialKind === "schedule") {
       setMode("personal");
       setMemberId(initial.memberId);
@@ -874,7 +885,6 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       setType(initial.type);
       setNote(initial.note || "");
       setIsHolidayWork(!!initial.isHolidayWork);
-      setAttendeeIds(initial.attendeeIds || []);
     } else {
       setMode("personal");
       setMemberId(defaultMemberId || members[0]?.id || "");
@@ -886,6 +896,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       setIsHolidayWork(false);
       setTitle("");
       setCompanyNote("");
+      setCompanyKind("internal");
       setAttendeeIds([]);
     }
     setShowQuickAdd(false);
@@ -905,7 +916,6 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       type,
       note: note.trim(),
       isHolidayWork: type === "대체휴무" ? isHolidayWork : false,
-      attendeeIds: type === "외부일정" ? attendeeIds : [],
     });
   };
   const submitCompany = () => {
@@ -917,6 +927,8 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       startDate,
       endDate: end,
       note: companyNote.trim(),
+      kind: companyKind,
+      attendeeIds: companyKind === "external" ? attendeeIds : [],
     });
   };
   const quickAdd = () => {
@@ -930,7 +942,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
     setAttendeeIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
-  const needsNote = type === "연차" || type === "반차" || type === "대체휴무" || type === "외부일정" || type === "내부일정";
+  const needsNote = type === "연차" || type === "반차" || type === "대체휴무";
 
   const modalTitle = isCopy ? "새 일정으로 복사" : isEditing ? (mode === "company" ? "회사 일정 수정" : "일정 수정") : "일정 추가";
 
@@ -996,7 +1008,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
 
             <div>
               <label className="text-xs font-semibold block mb-1.5" style={{ color: "#374151" }}>종류</label>
-              <div className="grid grid-cols-4 gap-1.5">
+              <div className="grid grid-cols-3 gap-1.5">
                 {LEAVE_TYPES.map((t) => (
                   <button
                     key={t}
@@ -1030,28 +1042,6 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
                 style={{ borderColor: "#E5E7EB" }}
               />
             </div>
-
-            {type === "외부일정" && (
-              <div>
-                <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>
-                  같이 참석하는 팀원 <span style={{ color: "#9CA3AF", fontWeight: 400 }}>(캘린더에는 안 뜨고, 상세보기에서만 보여요)</span>
-                </label>
-                <div className="border rounded p-2 space-y-1 overflow-y-auto" style={{ borderColor: "#E5E7EB", maxHeight: 120 }}>
-                  {members.filter((m) => m.id !== memberId).length === 0 ? (
-                    <p className="text-xs" style={{ color: "#9CA3AF" }}>선택 가능한 다른 팀원이 없습니다.</p>
-                  ) : (
-                    members
-                      .filter((m) => m.id !== memberId)
-                      .map((m) => (
-                        <label key={m.id} className="flex items-center gap-2 text-xs" style={{ color: "#374151" }}>
-                          <input type="checkbox" checked={attendeeIds.includes(m.id)} onChange={() => toggleAttendee(m.id)} />
-                          {m.name}
-                        </label>
-                      ))
-                  )}
-                </div>
-              </div>
-            )}
           </div>
         ) : (
           <div className="space-y-3">
@@ -1065,6 +1055,27 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
                 style={{ borderColor: "#E5E7EB" }}
               />
             </div>
+
+            <div>
+              <label className="text-xs font-semibold block mb-1.5" style={{ color: "#374151" }}>구분</label>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  onClick={() => setCompanyKind("internal")}
+                  className="text-xs font-medium py-1.5 rounded border"
+                  style={companyKind === "internal" ? { backgroundColor: ACCENT, borderColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", borderColor: "#E5E7EB", color: "#374151" }}
+                >
+                  내부일정
+                </button>
+                <button
+                  onClick={() => setCompanyKind("external")}
+                  className="text-xs font-medium py-1.5 rounded border"
+                  style={companyKind === "external" ? { backgroundColor: ACCENT, borderColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", borderColor: "#E5E7EB", color: "#374151" }}
+                >
+                  외부일정
+                </button>
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>시작일</label>
@@ -1086,6 +1097,26 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
                 style={{ borderColor: "#E5E7EB" }}
               />
             </div>
+
+            {companyKind === "external" && (
+              <div>
+                <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>
+                  동반 참석 팀원 <span style={{ color: "#9CA3AF", fontWeight: 400 }}>(캘린더에는 안 뜨고, 상세보기에서만 보여요)</span>
+                </label>
+                <div className="border rounded p-2 space-y-1 overflow-y-auto" style={{ borderColor: "#E5E7EB", maxHeight: 120 }}>
+                  {members.length === 0 ? (
+                    <p className="text-xs" style={{ color: "#9CA3AF" }}>등록된 팀원이 없습니다.</p>
+                  ) : (
+                    members.map((m) => (
+                      <label key={m.id} className="flex items-center gap-2 text-xs" style={{ color: "#374151" }}>
+                        <input type="checkbox" checked={attendeeIds.includes(m.id)} onChange={() => toggleAttendee(m.id)} />
+                        {m.name}
+                      </label>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1625,6 +1656,7 @@ function App() {
             isRecurring: true,
             isOverridden: !!override,
             recurringId: tpl.id,
+            kind: "internal",
           });
         }
       }
@@ -1824,9 +1856,14 @@ function App() {
       let cursor = parseKey(ev.startDate);
       const end = parseKey(ev.endDate || ev.startDate);
       let guard = 0;
+      const kindLabel = ev.kind === "external" ? "[외부]" : "[내부]";
+      const attendeeNames =
+        ev.kind === "external" && ev.attendeeIds && ev.attendeeIds.length
+          ? " (동반: " + ev.attendeeIds.map((id) => (members.find((mm) => mm.id === id) || {}).name || "?").join(", ") + ")"
+          : "";
       while (cursor <= end && guard < 60) {
         const k = toKey(cursor);
-        companyRows.push([k, WEEKDAYS[cursor.getDay()], "(전사)", ev.title, "", (ev.note || "").replace(/\r?\n/g, " ")]);
+        companyRows.push([k, WEEKDAYS[cursor.getDay()], "(전사)", `${kindLabel} ${ev.title}`, "", (ev.note || "").replace(/\r?\n/g, " ") + attendeeNames]);
         cursor = addDays(cursor, 1);
         guard++;
       }
@@ -1834,7 +1871,7 @@ function App() {
     Object.keys(recurringEventMap).forEach((k) => {
       const d = parseKey(k);
       recurringEventMap[k].forEach((ev) => {
-        companyRows.push([k, WEEKDAYS[d.getDay()], "(전사·반복)", ev.title, "", (ev.note || "").replace(/\r?\n/g, " ")]);
+        companyRows.push([k, WEEKDAYS[d.getDay()], "(전사·반복)", `[내부] ${ev.title}`, "", (ev.note || "").replace(/\r?\n/g, " ")]);
       });
     });
     const rows = [...scheduleRows, ...companyRows].sort((a, b) => a[0].localeCompare(b[0]));
