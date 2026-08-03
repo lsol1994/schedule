@@ -90,7 +90,7 @@ const MEMBER_COLORS = [
   { bg: "#EA580C", light: "#FFEDD5" },
 ];
 
-const LEAVE_TYPES = ["연차", "반차", "휴무", "대체휴무", "무급"];
+const LEAVE_TYPES = ["연차", "반차", "휴무", "대체휴무(반차)", "대체휴무(연차)", "휴일근무", "무급"];
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 const ACCENT = "#0D9488";
 const ACCENT_LIGHT = "#CCFBF1";
@@ -272,8 +272,8 @@ function parseExcelWorkbook(workbook, existingMembers) {
           let type = null;
           let isHolidayWork = false;
           if (mark === "●") {
-            type = dow === 0 || dow === 6 ? "휴무" : "대체휴무";
-            isHolidayWork = type === "대체휴무";
+            type = dow === 0 || dow === 6 ? "휴무" : "대체휴무(연차)";
+            isHolidayWork = type === "대체휴무(연차)";
           } else if (mark === "★") {
             type = "무급";
           } else if (mark === "연차") {
@@ -331,7 +331,8 @@ function chipStyle(type, color) {
     case "반차":
       return { backgroundColor: color.light, color: color.bg, border: `1px solid ${color.bg}` };
     case "휴무":
-    case "대체휴무":
+    case "대체휴무(반차)":
+    case "대체휴무(연차)":
       return {
         backgroundColor: "#fff",
         color: color.bg,
@@ -350,6 +351,8 @@ function chipStyle(type, color) {
         color: "#fff",
         border: "1px solid transparent",
       };
+    case "휴일근무":
+      return { backgroundColor: color.bg, color: "#fff", border: "2px solid #DC2626" };
     default:
       return {};
   }
@@ -366,8 +369,7 @@ function companyEventStyle(kind) {
 function ScheduleChip({ schedule, member, onClick }) {
   const color = MEMBER_COLORS[hashColorIndex(member?.id || "x")];
   const style = chipStyle(schedule.type, color);
-  const flag = schedule.type === "대체휴무" && schedule.isHolidayWork ? "*" : "";
-  const label = `${schedule.type}${flag}`;
+  const label = schedule.type;
   return (
     <div
       onClick={(e) => {
@@ -885,7 +887,6 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
   const [memberId, setMemberId] = useState("");
   const [type, setType] = useState("연차");
   const [note, setNote] = useState("");
-  const [isHolidayWork, setIsHolidayWork] = useState(false);
   const [quickName, setQuickName] = useState("");
   const [quickTotal, setQuickTotal] = useState(15);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
@@ -923,7 +924,6 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       setEndDate(initial.endDate || initial.startDate || initial.date);
       setType(initial.type);
       setNote(initial.note || "");
-      setIsHolidayWork(!!initial.isHolidayWork);
     } else {
       setMode("personal");
       setMemberId(defaultMemberId || members[0]?.id || "");
@@ -932,7 +932,6 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       setEndDate(d);
       setType("연차");
       setNote("");
-      setIsHolidayWork(false);
       setTitle("");
       setCompanyNote("");
       setCompanyKind("internal");
@@ -955,7 +954,6 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       endDate: end,
       type,
       note: note.trim(),
-      isHolidayWork: type === "대체휴무" ? isHolidayWork : false,
     });
   };
   const submitCompany = () => {
@@ -994,7 +992,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
     setAttendeeIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
-  const needsNote = type === "연차" || type === "반차" || type === "대체휴무";
+  const needsNote = type === "연차" || type === "반차" || type === "대체휴무(반차)" || type === "대체휴무(연차)" || type === "휴일근무";
 
   const modalTitle = isCopy ? "새 일정으로 복사" : isEditing ? (mode === "company" ? "회사 일정 수정" : "일정 수정") : "일정 추가";
 
@@ -1060,7 +1058,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
 
             <div>
               <label className="text-xs font-semibold block mb-1.5" style={{ color: "#374151" }}>종류</label>
-              <div className="grid grid-cols-3 gap-1.5">
+              <div className="grid grid-cols-4 gap-1.5">
                 {LEAVE_TYPES.map((t) => (
                   <button
                     key={t}
@@ -1073,13 +1071,6 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
                 ))}
               </div>
             </div>
-
-            {type === "대체휴무" && (
-              <label className="flex items-center gap-2 text-xs" style={{ color: "#374151" }}>
-                <input type="checkbox" checked={isHolidayWork} onChange={(e) => setIsHolidayWork(e.target.checked)} />
-                휴일근무에 따른 대체
-              </label>
-            )}
 
             <div>
               <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>
@@ -1924,7 +1915,7 @@ function App() {
   };
 
   const exportCSV = () => {
-    const header = ["날짜", "요일", "이름", "종류", "휴일근무대체", "메모"];
+    const header = ["날짜", "요일", "이름", "종류", "메모"];
     const scheduleRows = [];
     schedules.forEach((s) => {
       const m = members.find((mm) => mm.id === s.memberId);
@@ -1934,7 +1925,7 @@ function App() {
       const end = parseKey(endKey);
       let guard = 0;
       while (cursor <= end && guard < 60) {
-        scheduleRows.push([toKey(cursor), WEEKDAYS[cursor.getDay()], m ? m.name : "(삭제됨)", s.type, s.type === "대체휴무" && s.isHolidayWork ? "Y" : "", (s.note || "").replace(/\r?\n/g, " ")]);
+        scheduleRows.push([toKey(cursor), WEEKDAYS[cursor.getDay()], m ? m.name : "(삭제됨)", s.type, (s.note || "").replace(/\r?\n/g, " ")]);
         cursor = addDays(cursor, 1);
         guard++;
       }
@@ -1951,7 +1942,7 @@ function App() {
           : "";
       while (cursor <= end && guard < 60) {
         const k = toKey(cursor);
-        companyRows.push([k, WEEKDAYS[cursor.getDay()], "(전사)", `${kindLabel} ${ev.title}`, "", (ev.note || "").replace(/\r?\n/g, " ") + attendeeNames]);
+        companyRows.push([k, WEEKDAYS[cursor.getDay()], "(전사)", `${kindLabel} ${ev.title}`, (ev.note || "").replace(/\r?\n/g, " ") + attendeeNames]);
         cursor = addDays(cursor, 1);
         guard++;
       }
@@ -1959,7 +1950,7 @@ function App() {
     Object.keys(recurringEventMap).forEach((k) => {
       const d = parseKey(k);
       recurringEventMap[k].forEach((ev) => {
-        companyRows.push([k, WEEKDAYS[d.getDay()], "(전사·반복)", `${ev.kind === "external" ? "[외부]" : "[내부]"} ${ev.title}`, "", (ev.note || "").replace(/\r?\n/g, " ")]);
+        companyRows.push([k, WEEKDAYS[d.getDay()], "(전사·반복)", `${ev.kind === "external" ? "[외부]" : "[내부]"} ${ev.title}`, (ev.note || "").replace(/\r?\n/g, " ")]);
       });
     });
     const rows = [...scheduleRows, ...companyRows].sort((a, b) => a[0].localeCompare(b[0]));
