@@ -589,7 +589,7 @@ function HolidayManager({ holidays, onAdd, onDelete }) {
   );
 }
 
-function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDate, onSaveSchedule, onDeleteSchedule, onSaveCompanyEvent, onDeleteCompanyEvent, onQuickAddMember }) {
+function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDate, defaultMemberId, onSaveSchedule, onDeleteSchedule, onSaveCompanyEvent, onDeleteCompanyEvent, onQuickAddMember }) {
   const [mode, setMode] = useState("personal"); // "personal" | "company"
   // shared date range (used by both modes)
   const [startDate, setStartDate] = useState("");
@@ -624,7 +624,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       setIsHolidayWork(!!initial.isHolidayWork);
     } else {
       setMode("personal");
-      setMemberId(members[0]?.id || "");
+      setMemberId(defaultMemberId || members[0]?.id || "");
       const d = defaultDate || toKey(new Date());
       setStartDate(d);
       setEndDate(d);
@@ -635,7 +635,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       setCompanyNote("");
     }
     setShowQuickAdd(false);
-  }, [open, initial, initialKind, defaultDate]);
+  }, [open, initial, initialKind, defaultDate, defaultMemberId]);
 
   if (!open) return null;
   const isEditing = !!initial;
@@ -1050,6 +1050,7 @@ function App() {
   const [editingItem, setEditingItem] = useState(null);
   const [editingKind, setEditingKind] = useState(null); // "schedule" | "company"
   const [modalDefaultDate, setModalDefaultDate] = useState(null);
+  const [modalDefaultMemberId, setModalDefaultMemberId] = useState(null);
   const [dayDetailKey, setDayDetailKey] = useState(null);
   const [mobileShowFullMonth, setMobileShowFullMonth] = useState(false);
   const [pipRoot, setPipRoot] = useState(null);
@@ -1178,6 +1179,7 @@ function App() {
     setEditingItem(null);
     setEditingKind(null);
     setModalDefaultDate(dateKey);
+    setModalDefaultMemberId(filterMembers.size === 1 ? [...filterMembers][0] : null);
     setModalOpen(true);
   };
   const openEditSchedule = (schedule) => {
@@ -1575,6 +1577,7 @@ function App() {
         initial={editingItem}
         initialKind={editingKind}
         defaultDate={modalDefaultDate}
+        defaultMemberId={modalDefaultMemberId}
         onSaveSchedule={saveSchedule}
         onDeleteSchedule={deleteSchedule}
         onSaveCompanyEvent={saveCompanyEvent}
