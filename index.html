@@ -753,6 +753,7 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
   const [title, setTitle] = useState("");
   const [dayOfMonth, setDayOfMonth] = useState(15);
   const [shiftDirection, setShiftDirection] = useState("before");
+  const [kind, setKind] = useState("internal");
   const [note, setNote] = useState("");
   const [editingId, setEditingId] = useState(null);
 
@@ -760,6 +761,7 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
     setTitle("");
     setDayOfMonth(15);
     setShiftDirection("before");
+    setKind("internal");
     setNote("");
     setEditingId(null);
   };
@@ -770,6 +772,7 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
       title: title.trim(),
       dayOfMonth: Math.min(31, Math.max(1, Number(dayOfMonth) || 1)),
       shiftDirection,
+      kind,
       note: note.trim(),
     };
     if (editingId) {
@@ -785,6 +788,7 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
     setTitle(r.title);
     setDayOfMonth(r.dayOfMonth);
     setShiftDirection(r.shiftDirection);
+    setKind(r.kind || "internal");
     setNote(r.note || "");
   };
 
@@ -805,6 +809,18 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
               <div key={r.id} className="flex items-center justify-between text-xs py-1">
                 <span>
                   <span className="font-semibold">{r.title}</span>
+                  <span
+                    className="ml-1 px-1 rounded"
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 600,
+                      color: (r.kind || "internal") === "external" ? ACCENT : "#fff",
+                      backgroundColor: (r.kind || "internal") === "external" ? "#fff" : ACCENT,
+                      border: (r.kind || "internal") === "external" ? `1px dashed ${ACCENT}` : "1px solid transparent",
+                    }}
+                  >
+                    {(r.kind || "internal") === "external" ? "외부" : "내부"}
+                  </span>
                   <span style={{ color: "#9CA3AF" }}>
                     {" "}
                     (매월 {r.dayOfMonth}일, 휴무 시 {r.shiftDirection === "after" ? "이후" : "이전"} 평일{r.createdAt ? `, ${r.createdAt}부터 적용` : ""})
@@ -819,6 +835,22 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
           </div>
           <div className="space-y-1.5 pt-2 border-t" style={{ borderColor: "#F3F4F6" }}>
             <input placeholder="일정명 (예: 급여일)" value={title} onChange={(e) => setTitle(e.target.value)} className="w-full text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }} />
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                onClick={() => setKind("internal")}
+                className="text-xs font-medium py-1.5 rounded border"
+                style={kind === "internal" ? { backgroundColor: ACCENT, borderColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", borderColor: "#E5E7EB", color: "#374151" }}
+              >
+                내부일정
+              </button>
+              <button
+                onClick={() => setKind("external")}
+                className="text-xs font-medium py-1.5 rounded border"
+                style={kind === "external" ? { backgroundColor: ACCENT, borderColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", borderColor: "#E5E7EB", color: "#374151" }}
+              >
+                외부일정
+              </button>
+            </div>
             <div className="flex items-center gap-1.5">
               <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>매월</span>
               <input type="number" min="1" max="31" value={dayOfMonth} onChange={(e) => setDayOfMonth(e.target.value)} className="w-14 text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
@@ -844,7 +876,7 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
   );
 }
 
-function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDate, defaultMemberId, onSaveSchedule, onDeleteSchedule, onSaveCompanyEvent, onDeleteCompanyEvent, onQuickAddMember }) {
+function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDate, defaultMemberId, onSaveSchedule, onDeleteSchedule, onSaveCompanyEvent, onDeleteCompanyEvent, onQuickAddMember, onAddRecurring }) {
   const [mode, setMode] = useState("personal"); // "personal" | "company"
   // shared date range (used by both modes)
   const [startDate, setStartDate] = useState("");
@@ -863,12 +895,19 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
   const [companyKind, setCompanyKind] = useState("internal"); // "internal" | "external"
   // 외부(external) company event attendees — informational, visible only when opening the entry
   const [attendeeIds, setAttendeeIds] = useState([]);
+  // register as a recurring (매월) rule instead of a single dated event — 내부일정, new entries only
+  const [isRecurringMode, setIsRecurringMode] = useState(false);
+  const [recurDayOfMonth, setRecurDayOfMonth] = useState(15);
+  const [recurShiftDirection, setRecurShiftDirection] = useState("before");
   // copy-as-new-entry mode
   const [isCopy, setIsCopy] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setIsCopy(false);
+    setIsRecurringMode(false);
+    setRecurDayOfMonth(15);
+    setRecurShiftDirection("before");
     if (initial && initialKind === "company") {
       setMode("company");
       setTitle(initial.title);
@@ -898,6 +937,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       setCompanyNote("");
       setCompanyKind("internal");
       setAttendeeIds([]);
+      if (d) setRecurDayOfMonth(parseKey(d).getDate());
     }
     setShowQuickAdd(false);
   }, [open, initial, initialKind, defaultDate, defaultMemberId]);
@@ -919,6 +959,18 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
     });
   };
   const submitCompany = () => {
+    if (isRecurringMode) {
+      if (!title.trim()) return;
+      onAddRecurring({
+        title: title.trim(),
+        dayOfMonth: Math.min(31, Math.max(1, Number(recurDayOfMonth) || 1)),
+        shiftDirection: recurShiftDirection,
+        kind: companyKind,
+        note: companyNote.trim(),
+      });
+      onClose();
+      return;
+    }
     if (!title.trim() || !startDate) return;
     const end = endDate && endDate >= startDate ? endDate : startDate;
     onSaveCompanyEvent({
@@ -1076,16 +1128,38 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>시작일</label>
-                <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+            {!isEditing && companyKind === "internal" && (
+              <label className="flex items-center gap-2 text-xs p-2 rounded" style={{ color: "#374151", backgroundColor: "#F8F9FB" }}>
+                <input type="checkbox" checked={isRecurringMode} onChange={(e) => setIsRecurringMode(e.target.checked)} />
+                매월 반복되는 일정으로 등록 (예: 급여일, 세금 납부일)
+              </label>
+            )}
+
+            {isRecurringMode ? (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>매월</span>
+                  <input type="number" min="1" max="31" value={recurDayOfMonth} onChange={(e) => setRecurDayOfMonth(e.target.value)} className="w-16 text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+                  <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>일 · 휴무 시</span>
+                  <select value={recurShiftDirection} onChange={(e) => setRecurShiftDirection(e.target.value)} className="flex-1 text-sm border rounded px-1.5 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB" }}>
+                    <option value="before">이전 평일</option>
+                    <option value="after">이후 평일</option>
+                  </select>
+                </div>
+                <p className="text-xs" style={{ color: "#9CA3AF" }}>오늘부터 적용돼요. 이후 "반복 일정 관리"에서 달마다 따로 수정하거나 규칙 전체를 삭제할 수 있어요.</p>
               </div>
-              <div>
-                <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>종료일</label>
-                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>시작일</label>
+                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>종료일</label>
+                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
+                </div>
               </div>
-            </div>
+            )}
             <div>
               <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>메모</label>
               <textarea
@@ -1147,7 +1221,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
             {mode === "personal" ? (
               <button onClick={submitPersonal} disabled={!memberId || !startDate} className="text-xs font-semibold px-3 py-2 rounded text-white disabled:opacity-40" style={{ backgroundColor: ACCENT }}>저장</button>
             ) : (
-              <button onClick={submitCompany} disabled={!title.trim() || !startDate} className="text-xs font-semibold px-3 py-2 rounded text-white disabled:opacity-40" style={{ backgroundColor: ACCENT }}>저장</button>
+              <button onClick={submitCompany} disabled={isRecurringMode ? !title.trim() : !title.trim() || !startDate} className="text-xs font-semibold px-3 py-2 rounded text-white disabled:opacity-40" style={{ backgroundColor: ACCENT }}>{isRecurringMode ? "반복 등록" : "저장"}</button>
             )}
           </div>
         </div>
@@ -1409,7 +1483,21 @@ function RecurringInfoModal({ target, onClose, onDeleteTemplate, onSetOverride }
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-base font-bold" style={{ color: "#111827" }}>🔁 {target.title}</h3>
+          <h3 className="text-base font-bold flex items-center gap-2" style={{ color: "#111827" }}>
+            🔁 {target.title}
+            <span
+              className="px-1.5 py-0.5 rounded"
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                color: (target.kind || "internal") === "external" ? ACCENT : "#fff",
+                backgroundColor: (target.kind || "internal") === "external" ? "#fff" : ACCENT,
+                border: (target.kind || "internal") === "external" ? `1px dashed ${ACCENT}` : "1px solid transparent",
+              }}
+            >
+              {(target.kind || "internal") === "external" ? "외부" : "내부"}
+            </span>
+          </h3>
           <button onClick={onClose} className="p-1 -m-1"><X size={18} color="#9CA3AF" /></button>
         </div>
 
@@ -1656,7 +1744,7 @@ function App() {
             isRecurring: true,
             isOverridden: !!override,
             recurringId: tpl.id,
-            kind: "internal",
+            kind: tpl.kind || "internal",
           });
         }
       }
@@ -1871,7 +1959,7 @@ function App() {
     Object.keys(recurringEventMap).forEach((k) => {
       const d = parseKey(k);
       recurringEventMap[k].forEach((ev) => {
-        companyRows.push([k, WEEKDAYS[d.getDay()], "(전사·반복)", `[내부] ${ev.title}`, "", (ev.note || "").replace(/\r?\n/g, " ")]);
+        companyRows.push([k, WEEKDAYS[d.getDay()], "(전사·반복)", `${ev.kind === "external" ? "[외부]" : "[내부]"} ${ev.title}`, "", (ev.note || "").replace(/\r?\n/g, " ")]);
       });
     });
     const rows = [...scheduleRows, ...companyRows].sort((a, b) => a[0].localeCompare(b[0]));
@@ -2230,6 +2318,7 @@ function App() {
         onSaveCompanyEvent={saveCompanyEvent}
         onDeleteCompanyEvent={deleteCompanyEvent}
         onQuickAddMember={addMember}
+        onAddRecurring={addRecurringEvent}
       />
 
       <DayDetailModal
