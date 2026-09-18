@@ -90,7 +90,7 @@ const MEMBER_COLORS = [
   { bg: "#EA580C", light: "#FFEDD5" },
 ];
 
-const LEAVE_TYPES = ["연차", "반차", "휴무", "대체휴무(반차)", "대체휴무(연차)", "휴일근무", "무급", "경조휴무"];
+const LEAVE_TYPES = ["연차", "반차", "휴무", "대체휴무(반차)", "대체휴무(연차)", "휴일근무", "경조휴무"];
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 const ACCENT = "#0D9488";
 const ACCENT_LIGHT = "#CCFBF1";
@@ -275,7 +275,8 @@ function parseExcelWorkbook(workbook, existingMembers) {
             type = dow === 0 || dow === 6 ? "휴무" : "대체휴무(연차)";
             isHolidayWork = type === "대체휴무(연차)";
           } else if (mark === "★") {
-            type = "무급";
+            unrecognized.push({ name, day, mark });
+            return;
           } else if (mark === "연차") {
             type = "연차";
           } else if (mark === "반차") {
@@ -324,15 +325,18 @@ function parseExcelWorkbook(workbook, existingMembers) {
 }
 
 // ------------- style helpers -------------
+// 연차/반차: 동일한 양식(채워진 필/보더 없음)이되, 색의 짙음(연차)과 옅음(반차)으로만 구분한다.
+// 휴무/대체휴무(연차)/대체휴무(반차)/휴일근무: 동일한 양식(좌측 굵은 보더 + 흰 배경)이되, 이름 표기(typeLabel)로만 구분한다.
 function chipStyle(type, color) {
   switch (type) {
     case "연차":
       return { backgroundColor: color.bg, color: "#fff", border: "1px solid transparent" };
     case "반차":
-      return { backgroundColor: color.light, color: color.bg, border: `1px solid ${color.bg}` };
+      return { backgroundColor: color.light, color: color.bg, border: "1px solid transparent" };
     case "휴무":
     case "대체휴무(반차)":
     case "대체휴무(연차)":
+    case "휴일근무":
       return {
         backgroundColor: "#fff",
         color: color.bg,
@@ -345,18 +349,28 @@ function chipStyle(type, color) {
       return { backgroundColor: "#fff", color: color.bg, border: `1.5px dashed ${color.bg}` };
     case "내부일정":
       return { backgroundColor: "#fff", color: color.bg, border: `1.5px dotted ${color.bg}` };
-    case "무급":
-      return {
-        backgroundImage: `repeating-linear-gradient(45deg, ${color.bg}, ${color.bg} 5px, rgba(0,0,0,0.25) 5px, rgba(0,0,0,0.25) 10px)`,
-        color: "#fff",
-        border: "1px solid transparent",
-      };
-    case "휴일근무":
-      return { backgroundColor: color.bg, color: "#fff", border: "2px solid #DC2626" };
     case "경조휴무":
       return { backgroundColor: "#fff", color: color.bg, border: `3px double ${color.bg}` };
     default:
-      return {};
+      return { backgroundColor: color.light, color: color.bg, border: "1px solid transparent" };
+  }
+}
+
+// 캘린더 배지에 표시할 짧은 이름 접미사. 저장되는 실제 type 값은 그대로 유지하고, 화면 표기만 축약한다.
+function typeLabel(type) {
+  switch (type) {
+    case "휴무":
+      return "휴";
+    case "대체휴무(연차)":
+      return "대휴/연";
+    case "대체휴무(반차)":
+      return "대휴/반";
+    case "휴일근무":
+      return "휴근";
+    case "경조휴무":
+      return "경조";
+    default:
+      return type; // 연차, 반차, 외부일정, 내부일정 등은 그대로 표기
   }
 }
 
@@ -371,7 +385,7 @@ function companyEventStyle(kind) {
 function ScheduleChip({ schedule, member, onClick }) {
   const color = MEMBER_COLORS[hashColorIndex(member?.id || "x")];
   const style = chipStyle(schedule.type, color);
-  const label = schedule.type;
+  const label = typeLabel(schedule.type);
   return (
     <div
       onClick={(e) => {
@@ -431,73 +445,238 @@ function Legend() {
   );
 }
 
-function DayCell({ date, currentMonth, schedules, companyEvents, holidayName, members, onAdd, onEditSchedule, onEditCompanyEvent, onShowMore, tall }) {
-  const key = toKey(date);
-  const inMonth = date.getMonth() === currentMonth;
-  const today = isToday(date);
-  const dow = date.getDay();
-  const maxVisible = tall ? 8 : 3;
-  const remainingSlots = Math.max(0, maxVisible - companyEvents.length);
-  const visible = schedules.slice(0, remainingSlots);
-  const hiddenCount = schedules.length - visible.length;
+// ------------- multi-day bar layout (month/week views) -------------
+// 요구사항 5: 여러 날에 걸친 동일 일정은 하나의 막대로 길게 표시하고,
+// 주(week) 경계를 넘어 이어지는 일정은 앞뒤 주에서 동일한 lane(높이)을 유지한다.
+const BAR_LANE_HEIGHT = 24; // 막대(칩) 한 줄의 높이(px)
+const DAY_HEADER_HEIGHT = 24; // 날짜 숫자/공휴일명이 표시되는 상단 영역 높이(px)
+const CALENDAR_BOTTOM_MARGIN_PX = 76; // 화면 하단에서 남겨둘 여백 ≈ 2cm
 
-  let dateColor = "#374151";
-  if (dow === 0) dateColor = "#DC2626";
-  if (dow === 6) dateColor = "#2563EB";
-  if (holidayName) dateColor = "#DC2626";
-  if (!inMonth) dateColor = "#D1D5DB";
+function useAvailableHeight(ref, marginPx, minHeight) {
+  const [height, setHeight] = useState(minHeight);
+  useEffect(() => {
+    function recalc() {
+      if (!ref.current) return;
+      const top = ref.current.getBoundingClientRect().top;
+      const avail = window.innerHeight - top - marginPx;
+      setHeight(Math.max(minHeight, Math.round(avail)));
+    }
+    recalc();
+    window.addEventListener("resize", recalc);
+    let ro = null;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(recalc);
+      ro.observe(document.body);
+    }
+    return () => {
+      window.removeEventListener("resize", recalc);
+      if (ro) ro.disconnect();
+    };
+  }, [ref, marginPx, minHeight]);
+  return height;
+}
 
-  let bgColor = "#fff";
-  if (holidayName) bgColor = "#FEF2F2";
-  if (today) bgColor = ACCENT_LIGHT;
+function layoutWeeks(weeks, items) {
+  let carryLanes = {};
+  return weeks.map((weekDays) => {
+    // currentDate의 시/분/초 성분이 남아 있을 수 있으므로 자정 기준으로 정규화한다
+    const weekStartKey = toKey(weekDays[0]);
+    const weekEndKey = toKey(weekDays[6]);
+    const weekStart = parseKey(weekStartKey);
+    const weekEnd = parseKey(weekEndKey);
+    const relevant = items.filter((it) => it.endDate >= weekStartKey && it.startDate <= weekEndKey);
+    const clipped = relevant.map((it) => {
+      const s = it.startDate < weekStartKey ? weekStart : parseKey(it.startDate);
+      const e = it.endDate > weekEndKey ? weekEnd : parseKey(it.endDate);
+      const startCol = Math.round((s - weekStart) / 86400000);
+      const endCol = Math.round((e - weekStart) / 86400000);
+      return { ...it, startCol, endCol };
+    });
 
+    // 지난 주부터 이어지는 일정은 기존 lane을 그대로 유지 (가장 낮은/일관된 높이 유지)
+    const continuing = [];
+    const fresh = [];
+    clipped.forEach((it) => {
+      if (it.startDate < weekStartKey && carryLanes[it.id] !== undefined) continuing.push(it);
+      else fresh.push(it);
+    });
+    continuing.sort((a, b) => carryLanes[a.id] - carryLanes[b.id]);
+    fresh.sort((a, b) => a.startCol - b.startCol || (b.endCol - b.startCol) - (a.endCol - a.startCol) || a.sortKey.localeCompare(b.sortKey));
+
+    const laneEnds = [];
+    const placed = [];
+    continuing.forEach((it) => {
+      let lane = carryLanes[it.id];
+      if (laneEnds[lane] !== undefined && laneEnds[lane] >= it.startCol) {
+        lane = 0;
+        while (laneEnds[lane] !== undefined && laneEnds[lane] >= it.startCol) lane++;
+      }
+      laneEnds[lane] = it.endCol;
+      placed.push({ ...it, lane });
+    });
+    fresh.forEach((it) => {
+      let lane = 0;
+      while (laneEnds[lane] !== undefined && laneEnds[lane] >= it.startCol) lane++;
+      laneEnds[lane] = it.endCol;
+      placed.push({ ...it, lane });
+    });
+
+    const nextCarry = {};
+    placed.forEach((it) => {
+      if (it.endDate > weekEndKey) nextCarry[it.id] = it.lane;
+    });
+    carryLanes = nextCarry;
+
+    placed.sort((a, b) => a.lane - b.lane || a.startCol - b.startCol);
+    return placed;
+  });
+}
+
+function BarChip({ item, members, laneHeight, onClick }) {
+  const left = (item.startCol / 7) * 100;
+  const width = ((item.endCol - item.startCol + 1) / 7) * 100;
+  const top = item.lane * laneHeight;
+  let style, content, tooltip;
+  if (item.kind === "schedule") {
+    const s = item.raw;
+    const member = members.find((m) => m.id === s.memberId);
+    const color = MEMBER_COLORS[hashColorIndex(member?.id || "x")];
+    style = chipStyle(s.type, color);
+    content = `${member ? member.name : "(삭제된 팀원)"}(${typeLabel(s.type)})`;
+    tooltip = s.note || "";
+  } else {
+    const ev = item.raw;
+    style = companyEventStyle(ev.kind);
+    const icon = ev.isRecurring ? "🔁" : ev.kind === "external" ? "🧳" : "📌";
+    content = `${icon} ${ev.title}`;
+    tooltip = ev.note || ev.title || "";
+  }
   return (
     <div
-      onClick={() => onAdd(key)}
-      className="border cursor-pointer flex flex-col p-1.5 transition-colors hover:bg-gray-50"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      title={tooltip}
+      className="absolute text-xs px-1.5 rounded truncate cursor-pointer font-medium leading-tight hover:opacity-80 flex items-center"
       style={{
-        minHeight: tall ? 260 : 108,
-        backgroundColor: bgColor,
-        borderColor: today ? ACCENT : "#EEF0F3",
-        opacity: inMonth ? 1 : 0.55,
+        left: `calc(${left}% + 2px)`,
+        width: `calc(${width}% - 4px)`,
+        top,
+        height: laneHeight - 4,
+        pointerEvents: "auto",
+        ...style,
       }}
     >
-      <div className="flex items-baseline justify-between gap-1 mb-1 px-1">
-        <span className="text-xs font-semibold" style={{ fontFamily: FONT_MONO, color: dateColor }}>
-          {date.getDate()}
-        </span>
-        {holidayName && (
-          <span className="text-[10px] font-semibold truncate" style={{ color: "#DC2626" }}>{holidayName}</span>
-        )}
-      </div>
-      <div className="flex-1 overflow-hidden">
-        {companyEvents.map((ev) => (
-          <CompanyEventChip key={ev.id} event={ev} onClick={() => onEditCompanyEvent(ev)} />
-        ))}
-        {visible.map((s) => (
-          <ScheduleChip key={s.id} schedule={s} member={members.find((m) => m.id === s.memberId)} onClick={() => onEditSchedule(s)} />
-        ))}
-        {hiddenCount > 0 && (
+      {content}
+    </div>
+  );
+}
+
+function WeekRow({ weekDays, holidayMap, laidOutItems, maxVisibleLanes, laneHeight, headerHeight, rowHeight, members, onAdd, onEditSchedule, onEditCompanyEvent, onShowMore, forceInMonth, currentMonth }) {
+  const hiddenByCol = [0, 0, 0, 0, 0, 0, 0];
+  const visible = [];
+  laidOutItems.forEach((it) => {
+    if (it.lane < maxVisibleLanes) {
+      visible.push(it);
+    } else {
+      for (let c = it.startCol; c <= it.endCol; c++) hiddenByCol[c]++;
+    }
+  });
+
+  return (
+    <div className="grid grid-cols-7 relative" style={{ height: rowHeight, gridTemplateRows: "1fr" }}>
+      {weekDays.map((d) => {
+        const key = toKey(d);
+        const inMonth = forceInMonth || d.getMonth() === currentMonth;
+        const today = isToday(d);
+        const dow = d.getDay();
+        const holidayName = holidayMap[key];
+        let dateColor = "#374151";
+        if (dow === 0) dateColor = "#DC2626";
+        if (dow === 6) dateColor = "#2563EB";
+        if (holidayName) dateColor = "#DC2626";
+        if (!inMonth) dateColor = "#D1D5DB";
+        let bgColor = "#fff";
+        if (holidayName) bgColor = "#FEF2F2";
+        if (today) bgColor = ACCENT_LIGHT;
+        return (
           <div
-            onClick={(e) => {
-              e.stopPropagation();
-              onShowMore(key);
-            }}
-            className="text-xs font-medium px-1.5 cursor-pointer hover:underline"
-            style={{ color: ACCENT }}
+            key={key}
+            onClick={() => onAdd(key)}
+            className="border cursor-pointer overflow-hidden hover:bg-gray-50 transition-colors"
+            style={{ backgroundColor: bgColor, borderColor: today ? ACCENT : "#EEF0F3", opacity: inMonth ? 1 : 0.55 }}
           >
-            +{hiddenCount}개 더보기
+            <div className="flex items-baseline justify-between gap-1 px-1.5 pt-1">
+              <span className="text-xs font-semibold" style={{ fontFamily: FONT_MONO, color: dateColor }}>
+                {d.getDate()}
+              </span>
+              {holidayName && (
+                <span className="text-[10px] font-semibold truncate" style={{ color: "#DC2626" }}>{holidayName}</span>
+              )}
+            </div>
           </div>
-        )}
+        );
+      })}
+      <div className="absolute left-0 right-0" style={{ top: headerHeight, bottom: 0, pointerEvents: "none" }}>
+        {visible.map((it) => (
+          <BarChip
+            key={it.id}
+            item={it}
+            members={members}
+            laneHeight={laneHeight}
+            onClick={() => (it.kind === "schedule" ? onEditSchedule(it.raw) : onEditCompanyEvent(it.raw))}
+          />
+        ))}
+        {weekDays.map((d, colIdx) => {
+          const count = hiddenByCol[colIdx];
+          if (!count) return null;
+          const key = toKey(d);
+          return (
+            <div
+              key={`more_${key}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onShowMore(key);
+              }}
+              className="absolute text-[11px] font-semibold px-1.5 cursor-pointer hover:underline truncate"
+              style={{
+                left: `${(colIdx / 7) * 100}%`,
+                width: `${(1 / 7) * 100}%`,
+                top: maxVisibleLanes * laneHeight,
+                height: laneHeight,
+                lineHeight: `${laneHeight}px`,
+                color: ACCENT,
+                pointerEvents: "auto",
+              }}
+            >
+              +{count}개 더보기
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-function MonthView({ currentDate, scheduleMap, companyEventMap, holidayMap, members, onAdd, onEditSchedule, onEditCompanyEvent, onShowMore }) {
+function MonthView({ currentDate, barItems, holidayMap, members, onAdd, onEditSchedule, onEditCompanyEvent, onShowMore }) {
   const days = useMemo(() => getMonthGrid(currentDate), [currentDate]);
+  const weeks = useMemo(() => {
+    const chunks = [];
+    for (let i = 0; i < days.length; i += 7) chunks.push(days.slice(i, i + 7));
+    return chunks;
+  }, [days]);
+
+  const containerRef = useRef(null);
+  const availableHeight = useAvailableHeight(containerRef, CALENDAR_BOTTOM_MARGIN_PX, weeks.length * 96);
+  const WEEKDAY_HEADER_H = 34;
+  const gridHeight = Math.max(weeks.length * 96, availableHeight - WEEKDAY_HEADER_H);
+  const rowHeight = Math.floor(gridHeight / weeks.length);
+
+  const weekLayouts = useMemo(() => layoutWeeks(weeks, barItems), [weeks, barItems]);
+
   return (
-    <div className="border rounded-lg overflow-hidden" style={{ borderColor: "#EEF0F3" }}>
+    <div ref={containerRef} className="border rounded-lg overflow-hidden" style={{ borderColor: "#EEF0F3" }}>
       <div className="overflow-x-auto">
         <div style={{ minWidth: 630 }}>
           <div className="grid grid-cols-7" style={{ backgroundColor: "#F8F9FB" }}>
@@ -507,26 +686,31 @@ function MonthView({ currentDate, scheduleMap, companyEventMap, holidayMap, memb
               </div>
             ))}
           </div>
-          <div className="grid grid-cols-7">
-            {days.map((d) => {
-              const key = toKey(d);
-              return (
-                <DayCell
-                  key={key}
-                  date={d}
-                  currentMonth={currentDate.getMonth()}
-                  schedules={scheduleMap[key] || []}
-                  companyEvents={companyEventMap[key] || []}
-                  holidayName={holidayMap[key]}
-                  members={members}
-                  onAdd={onAdd}
-                  onEditSchedule={onEditSchedule}
-                  onEditCompanyEvent={onEditCompanyEvent}
-                  onShowMore={onShowMore}
-                />
-              );
-            })}
-          </div>
+          {weeks.map((weekDays, idx) => {
+            const laidOutItems = weekLayouts[idx];
+            const totalLanesNeeded = laidOutItems.reduce((m, it) => Math.max(m, it.lane + 1), 0);
+            const available = Math.max(BAR_LANE_HEIGHT, rowHeight - DAY_HEADER_HEIGHT - 4);
+            const fitLanes = Math.max(1, Math.floor(available / BAR_LANE_HEIGHT));
+            const maxVisibleLanes = totalLanesNeeded > fitLanes ? Math.max(1, fitLanes - 1) : fitLanes;
+            return (
+              <WeekRow
+                key={idx}
+                weekDays={weekDays}
+                holidayMap={holidayMap}
+                laidOutItems={laidOutItems}
+                maxVisibleLanes={maxVisibleLanes}
+                laneHeight={BAR_LANE_HEIGHT}
+                headerHeight={DAY_HEADER_HEIGHT}
+                rowHeight={rowHeight}
+                members={members}
+                onAdd={onAdd}
+                onEditSchedule={onEditSchedule}
+                onEditCompanyEvent={onEditCompanyEvent}
+                onShowMore={onShowMore}
+                currentMonth={currentDate.getMonth()}
+              />
+            );
+          })}
         </div>
       </div>
       <p className="text-[11px] text-center py-1.5 sm:hidden" style={{ color: "#9CA3AF", borderTop: "1px solid #EEF0F3" }}>← 옆으로 밀어서 요일을 더 볼 수 있어요 →</p>
@@ -534,10 +718,24 @@ function MonthView({ currentDate, scheduleMap, companyEventMap, holidayMap, memb
   );
 }
 
-function WeekView({ currentDate, scheduleMap, companyEventMap, holidayMap, members, onAdd, onEditSchedule, onEditCompanyEvent, onShowMore }) {
+function WeekView({ currentDate, barItems, holidayMap, members, onAdd, onEditSchedule, onEditCompanyEvent, onShowMore }) {
   const days = useMemo(() => getWeekGrid(currentDate), [currentDate]);
+  const weeks = useMemo(() => [days], [days]);
+
+  const containerRef = useRef(null);
+  const availableHeight = useAvailableHeight(containerRef, CALENDAR_BOTTOM_MARGIN_PX, 320);
+  const WEEKDAY_HEADER_H = 34;
+  const rowHeight = Math.max(320, availableHeight - WEEKDAY_HEADER_H);
+
+  const weekLayouts = useMemo(() => layoutWeeks(weeks, barItems), [weeks, barItems]);
+  const laidOutItems = weekLayouts[0];
+  const totalLanesNeeded = laidOutItems.reduce((m, it) => Math.max(m, it.lane + 1), 0);
+  const available = Math.max(BAR_LANE_HEIGHT, rowHeight - DAY_HEADER_HEIGHT - 4);
+  const fitLanes = Math.max(1, Math.floor(available / BAR_LANE_HEIGHT));
+  const maxVisibleLanes = totalLanesNeeded > fitLanes ? Math.max(1, fitLanes - 1) : fitLanes;
+
   return (
-    <div className="border rounded-lg overflow-hidden" style={{ borderColor: "#EEF0F3" }}>
+    <div ref={containerRef} className="border rounded-lg overflow-hidden" style={{ borderColor: "#EEF0F3" }}>
       <div className="overflow-x-auto">
         <div style={{ minWidth: 630 }}>
           <div className="grid grid-cols-7" style={{ backgroundColor: "#F8F9FB" }}>
@@ -547,27 +745,21 @@ function WeekView({ currentDate, scheduleMap, companyEventMap, holidayMap, membe
               </div>
             ))}
           </div>
-          <div className="grid grid-cols-7">
-            {days.map((d) => {
-              const key = toKey(d);
-              return (
-                <DayCell
-                  key={key}
-                  date={d}
-                  currentMonth={d.getMonth()}
-                  schedules={scheduleMap[key] || []}
-                  companyEvents={companyEventMap[key] || []}
-                  holidayName={holidayMap[key]}
-                  members={members}
-                  onAdd={onAdd}
-                  onEditSchedule={onEditSchedule}
-                  onEditCompanyEvent={onEditCompanyEvent}
-                  onShowMore={onShowMore}
-                  tall
-                />
-              );
-            })}
-          </div>
+          <WeekRow
+            weekDays={days}
+            holidayMap={holidayMap}
+            laidOutItems={laidOutItems}
+            maxVisibleLanes={maxVisibleLanes}
+            laneHeight={BAR_LANE_HEIGHT}
+            headerHeight={DAY_HEADER_HEIGHT}
+            rowHeight={rowHeight}
+            members={members}
+            onAdd={onAdd}
+            onEditSchedule={onEditSchedule}
+            onEditCompanyEvent={onEditCompanyEvent}
+            onShowMore={onShowMore}
+            forceInMonth
+          />
         </div>
       </div>
       <p className="text-[11px] text-center py-1.5 sm:hidden" style={{ color: "#9CA3AF", borderTop: "1px solid #EEF0F3" }}>← 옆으로 밀어서 요일을 더 볼 수 있어요 →</p>
@@ -752,18 +944,51 @@ function HolidayManager({ holidays, onAdd, onDelete }) {
   );
 }
 
+const QUARTER_GROUPS = [
+  { value: 1, label: "1·4·7·10월" },
+  { value: 2, label: "2·5·8·11월" },
+  { value: 3, label: "3·6·9·12월" },
+];
+const ALL_MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
+
+function describeRecurringFrequency(r) {
+  const freq = r.frequency || "monthly";
+  if (freq === "yearly" && r.months && r.months.length) {
+    return `매년 ${r.months[0]}월 ${r.dayOfMonth}일`;
+  }
+  if (freq === "quarterly" && r.months && r.months.length) {
+    return `분기별(${r.months.join("·")}월) ${r.dayOfMonth}일`;
+  }
+  if (freq === "custom" && r.months && r.months.length) {
+    return `특정월(${r.months.join(",")}월) ${r.dayOfMonth}일`;
+  }
+  return `매월 ${r.dayOfMonth}일`;
+}
+
 function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
   const [open, setOpen] = useState(true);
   const [title, setTitle] = useState("");
+  const [frequency, setFrequency] = useState("monthly"); // "monthly" | "quarterly" | "yearly" | "custom"
   const [dayOfMonth, setDayOfMonth] = useState(15);
+  const [quarterGroup, setQuarterGroup] = useState(1);
+  const [yearlyMonth, setYearlyMonth] = useState(1);
+  const [customMonths, setCustomMonths] = useState([]);
   const [shiftDirection, setShiftDirection] = useState("before");
   const [kind, setKind] = useState("internal");
   const [note, setNote] = useState("");
   const [editingId, setEditingId] = useState(null);
 
+  const toggleCustomMonth = (m) => {
+    setCustomMonths((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m].sort((a, b) => a - b)));
+  };
+
   const resetForm = () => {
     setTitle("");
+    setFrequency("monthly");
     setDayOfMonth(15);
+    setQuarterGroup(1);
+    setYearlyMonth(1);
+    setCustomMonths([]);
     setShiftDirection("before");
     setKind("internal");
     setNote("");
@@ -772,8 +997,18 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
 
   const submit = () => {
     if (!title.trim()) return;
+    if (frequency === "custom" && customMonths.length === 0) {
+      window.alert("특정월 선택 시 최소 한 개 이상의 달을 선택해주세요.");
+      return;
+    }
+    let months = null;
+    if (frequency === "quarterly") months = [quarterGroup, quarterGroup + 3, quarterGroup + 6, quarterGroup + 9];
+    else if (frequency === "yearly") months = [yearlyMonth];
+    else if (frequency === "custom") months = [...customMonths];
     const data = {
       title: title.trim(),
+      frequency,
+      months,
       dayOfMonth: Math.min(31, Math.max(1, Number(dayOfMonth) || 1)),
       shiftDirection,
       kind,
@@ -788,9 +1023,14 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
   };
 
   const startEdit = (r) => {
+    const freq = r.frequency || "monthly";
     setEditingId(r.id);
     setTitle(r.title);
+    setFrequency(freq);
     setDayOfMonth(r.dayOfMonth);
+    setQuarterGroup(freq === "quarterly" && r.months && r.months.length ? Math.min(...r.months) : 1);
+    setYearlyMonth(freq === "yearly" && r.months && r.months.length ? r.months[0] : 1);
+    setCustomMonths(freq === "custom" && r.months ? r.months : []);
     setShiftDirection(r.shiftDirection);
     setKind(r.kind || "internal");
     setNote(r.note || "");
@@ -805,7 +1045,7 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
       {open && (
         <>
           <p className="text-xs mb-2" style={{ color: "#9CA3AF" }}>
-            매월 정해진 날짜에 자동으로 생성돼요. 그 날짜가 휴무(주말·공휴일)면 이전/이후 평일로 옮겨져요. 등록한 날짜부터 적용되며, 그 이전 달에는 생성되지 않아요.
+            매월·분기별·매년·특정월 중 원하는 주기로 정해진 날짜에 자동 생성돼요. 그 날짜가 휴무(주말·공휴일)면 이전/이후 평일로 옮겨져요. 등록한 날짜부터 적용되며, 그 이전에는 생성되지 않아요.
           </p>
           <div className="space-y-1.5 mb-3">
             {recurringEvents.length === 0 && <p className="text-xs" style={{ color: "#9CA3AF" }}>등록된 반복 일정이 없습니다.</p>}
@@ -827,7 +1067,7 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
                   </span>
                   <span style={{ color: "#9CA3AF" }}>
                     {" "}
-                    (매월 {r.dayOfMonth}일, 휴무 시 {r.shiftDirection === "after" ? "이후" : "이전"} 평일{r.createdAt ? `, ${r.createdAt}부터 적용` : ""})
+                    ({describeRecurringFrequency(r)}, 휴무 시 {r.shiftDirection === "after" ? "이후" : "이전"} 평일{r.createdAt ? `, ${r.createdAt}부터 적용` : ""})
                   </span>
                 </span>
                 <span className="flex items-center gap-2">
@@ -856,7 +1096,49 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
               </button>
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>매월</span>
+              <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>반복 주기</span>
+              <select value={frequency} onChange={(e) => setFrequency(e.target.value)} className="flex-1 text-xs border rounded px-1.5 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB" }}>
+                <option value="monthly">매월</option>
+                <option value="quarterly">분기별 (4개월마다)</option>
+                <option value="yearly">매년 (연 1회)</option>
+                <option value="custom">특정월 선택</option>
+              </select>
+            </div>
+            {frequency === "quarterly" && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>대상월</span>
+                <select value={quarterGroup} onChange={(e) => setQuarterGroup(Number(e.target.value))} className="flex-1 text-xs border rounded px-1.5 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB" }}>
+                  {QUARTER_GROUPS.map((g) => (
+                    <option key={g.value} value={g.value}>{g.label}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {frequency === "yearly" && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>대상월</span>
+                <select value={yearlyMonth} onChange={(e) => setYearlyMonth(Number(e.target.value))} className="flex-1 text-xs border rounded px-1.5 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB" }}>
+                  {ALL_MONTHS.map((m) => (
+                    <option key={m} value={m}>{m}월</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {frequency === "custom" && (
+              <div>
+                <p className="text-xs mb-1" style={{ color: "#6B7280" }}>대상월 (복수 선택 가능)</p>
+                <div className="grid grid-cols-6 gap-1">
+                  {ALL_MONTHS.map((m) => (
+                    <label key={m} className="flex items-center justify-center gap-0.5 text-[10px] border rounded py-1" style={customMonths.includes(m) ? { backgroundColor: ACCENT, borderColor: ACCENT, color: "#fff" } : { borderColor: "#E5E7EB", color: "#374151" }}>
+                      <input type="checkbox" className="hidden" checked={customMonths.includes(m)} onChange={() => toggleCustomMonth(m)} />
+                      {m}월
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>{frequency === "monthly" ? "매월" : "해당 월"}</span>
               <input type="number" min="1" max="31" value={dayOfMonth} onChange={(e) => setDayOfMonth(e.target.value)} className="w-14 text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
               <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>일 · 휴무 시</span>
               <select value={shiftDirection} onChange={(e) => setShiftDirection(e.target.value)} className="flex-1 text-xs border rounded px-1.5 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB" }}>
@@ -963,6 +1245,8 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       if (!title.trim()) return;
       onAddRecurring({
         title: title.trim(),
+        frequency: "monthly",
+        months: null,
         dayOfMonth: Math.min(31, Math.max(1, Number(recurDayOfMonth) || 1)),
         shiftDirection: recurShiftDirection,
         kind: companyKind,
@@ -1126,6 +1410,9 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
                 <input type="checkbox" checked={isRecurringMode} onChange={(e) => setIsRecurringMode(e.target.checked)} />
                 매월 반복되는 일정으로 등록 (예: 급여일, 세금 납부일)
               </label>
+            )}
+            {!isEditing && companyKind === "internal" && isRecurringMode && (
+              <p className="text-xs" style={{ color: "#9CA3AF" }}>분기별·매년·특정월 등 다른 주기는 "반복 일정 관리"에서 설정할 수 있어요.</p>
             )}
 
             {isRecurringMode ? (
@@ -1497,7 +1784,7 @@ function RecurringInfoModal({ target, onClose, onDeleteTemplate, onSetOverride }
         {mode === "view" ? (
           <>
             <p className="text-xs mb-1" style={{ color: "#6B7280" }}>
-              "반복 일정 관리"에서 매월 자동으로 생성돼요.
+              "반복 일정 관리"에서 설정한 주기로 자동 생성돼요.
               {target.isOverridden && <span style={{ color: ACCENT, fontWeight: 600 }}> (이 달은 따로 수정됨)</span>}
             </p>
             {target.note && <p className="text-xs mb-3" style={{ color: "#374151" }}>{target.note}</p>}
@@ -1656,12 +1943,19 @@ function App() {
     return () => dataRef.off("value", handleValue);
   }, [user]);
 
+  // 무급은 화면에서 항상 제외한다 (요구사항 4). 과거 데이터에 남아있어도 표시되지 않는다.
+  const filteredSchedules = useMemo(() => {
+    return schedules.filter(
+      (s) =>
+        s.type !== "무급" &&
+        (filterMembers.size === 0 || filterMembers.has(s.memberId)) &&
+        (filterTypes.size === 0 || filterTypes.has(s.type))
+    );
+  }, [schedules, filterMembers, filterTypes]);
+
   const scheduleMap = useMemo(() => {
     const map = {};
-    const filtered = schedules.filter(
-      (s) => (filterMembers.size === 0 || filterMembers.has(s.memberId)) && (filterTypes.size === 0 || filterTypes.has(s.type))
-    );
-    filtered.forEach((s) => {
+    filteredSchedules.forEach((s) => {
       const startKey = s.startDate || s.date;
       const endKey = s.endDate || s.startDate || s.date;
       let cursor = parseKey(startKey);
@@ -1676,7 +1970,7 @@ function App() {
       }
     });
     return map;
-  }, [schedules, filterMembers, filterTypes]);
+  }, [filteredSchedules]);
 
   const companyEventMap = useMemo(() => {
     const map = {};
@@ -1718,8 +2012,10 @@ function App() {
     const startYear = today.getFullYear() - 1;
     const endYear = today.getFullYear() + 2;
     recurringEvents.forEach((tpl) => {
+      const activeMonths = tpl.months && tpl.months.length ? tpl.months : null; // null = 매월(모든 달)
       for (let y = startYear; y <= endYear; y++) {
         for (let mo = 1; mo <= 12; mo++) {
+          if (activeMonths && !activeMonths.includes(mo)) continue;
           const ym = `${y}-${pad(mo)}`;
           const override = (tpl.overrides || {})[ym];
           if (override && override.skip) continue;
@@ -1755,6 +2051,27 @@ function App() {
     });
     return map;
   }, [companyEventMap, recurringEventMap]);
+
+  // 월간/주간 캘린더에서 여러 날짜에 걸친 일정을 하나의 막대로 표시하기 위한 원본 항목 목록
+  const barItems = useMemo(() => {
+    const items = [];
+    filteredSchedules.forEach((s) => {
+      const start = s.startDate || s.date;
+      const end = s.endDate || s.startDate || s.date;
+      items.push({ id: `s_${s.id}`, kind: "schedule", raw: s, startDate: start, endDate: end, sortKey: `${start}_s_${s.id}` });
+    });
+    companyEvents.forEach((ev) => {
+      const start = ev.startDate;
+      const end = ev.endDate || ev.startDate;
+      items.push({ id: `c_${ev.id}`, kind: "company", raw: ev, startDate: start, endDate: end, sortKey: `${start}_c_${ev.id}` });
+    });
+    Object.values(recurringEventMap).forEach((list) => {
+      list.forEach((r) => {
+        items.push({ id: `r_${r.id}`, kind: "company", raw: r, startDate: r.date, endDate: r.date, sortKey: `${r.date}_r_${r.id}` });
+      });
+    });
+    return items;
+  }, [filteredSchedules, companyEvents, recurringEventMap]);
 
   const goPrev = () => setCurrentDate((d) => (view === "month" ? new Date(d.getFullYear(), d.getMonth() - 1, 1) : addDays(d, -7)));
   const goNext = () => setCurrentDate((d) => (view === "month" ? new Date(d.getFullYear(), d.getMonth() + 1, 1) : addDays(d, 7)));
@@ -2222,8 +2539,7 @@ function App() {
               {view === "month" ? (
                 <MonthView
                   currentDate={currentDate}
-                  scheduleMap={scheduleMap}
-                  companyEventMap={displayCompanyEventMap}
+                  barItems={barItems}
                   holidayMap={holidayMap}
                   members={members}
                   onAdd={openAddModal}
@@ -2234,8 +2550,7 @@ function App() {
               ) : (
                 <WeekView
                   currentDate={currentDate}
-                  scheduleMap={scheduleMap}
-                  companyEventMap={displayCompanyEventMap}
+                  barItems={barItems}
                   holidayMap={holidayMap}
                   members={members}
                   onAdd={openAddModal}
@@ -2252,8 +2567,7 @@ function App() {
                 <>
                   <MonthView
                     currentDate={currentDate}
-                    scheduleMap={scheduleMap}
-                    companyEventMap={displayCompanyEventMap}
+                    barItems={barItems}
                     holidayMap={holidayMap}
                     members={members}
                     onAdd={openAddModal}
