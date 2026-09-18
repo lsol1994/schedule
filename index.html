@@ -91,6 +91,13 @@ const MEMBER_COLORS = [
 ];
 
 const LEAVE_TYPES = ["연차", "반차", "휴무", "대체휴무(반차)", "대체휴무(연차)", "휴일근무", "경조휴무"];
+// 반복일정의 "말일"(그 달의 마지막 날) 선택을 나타내는 특수값.
+// 실제 달은 최대 31일까지밖에 없으므로, resolveRecurringDate의 Math.min(day, daysInMonth) 계산에서
+// 이 값은 항상 daysInMonth로 치환되어 그 달의 실제 마지막 날짜가 된다.
+const LAST_DAY_OF_MONTH = 32;
+function formatDayOfMonth(day) {
+  return day === LAST_DAY_OF_MONTH ? "말일" : `${day}일`;
+}
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 const ACCENT = "#0D9488";
 const ACCENT_LIGHT = "#CCFBF1";
@@ -953,16 +960,17 @@ const ALL_MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 
 function describeRecurringFrequency(r) {
   const freq = r.frequency || "monthly";
+  const dayLabel = formatDayOfMonth(r.dayOfMonth);
   if (freq === "yearly" && r.months && r.months.length) {
-    return `매년 ${r.months[0]}월 ${r.dayOfMonth}일`;
+    return `매년 ${r.months[0]}월 ${dayLabel}`;
   }
   if (freq === "quarterly" && r.months && r.months.length) {
-    return `분기별(${r.months.join("·")}월) ${r.dayOfMonth}일`;
+    return `분기별(${r.months.join("·")}월) ${dayLabel}`;
   }
   if (freq === "custom" && r.months && r.months.length) {
-    return `특정월(${r.months.join(",")}월) ${r.dayOfMonth}일`;
+    return `특정월(${r.months.join(",")}월) ${dayLabel}`;
   }
-  return `매월 ${r.dayOfMonth}일`;
+  return `매월 ${dayLabel}`;
 }
 
 function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
@@ -1009,7 +1017,7 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
       title: title.trim(),
       frequency,
       months,
-      dayOfMonth: Math.min(31, Math.max(1, Number(dayOfMonth) || 1)),
+      dayOfMonth: dayOfMonth === LAST_DAY_OF_MONTH ? LAST_DAY_OF_MONTH : Math.min(31, Math.max(1, Number(dayOfMonth) || 1)),
       shiftDirection,
       kind,
       note: note.trim(),
@@ -1139,8 +1147,18 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
             )}
             <div className="flex items-center gap-1.5">
               <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>{frequency === "monthly" ? "매월" : "해당 월"}</span>
-              <input type="number" min="1" max="31" value={dayOfMonth} onChange={(e) => setDayOfMonth(e.target.value)} className="w-14 text-xs border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
-              <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>일 · 휴무 시</span>
+              <select
+                value={dayOfMonth === LAST_DAY_OF_MONTH ? "last" : dayOfMonth}
+                onChange={(e) => setDayOfMonth(e.target.value === "last" ? LAST_DAY_OF_MONTH : Number(e.target.value))}
+                className="w-20 text-xs border rounded px-1.5 py-1.5"
+                style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }}
+              >
+                {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                  <option key={d} value={d}>{d}일</option>
+                ))}
+                <option value="last">말일</option>
+              </select>
+              <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>· 휴무 시</span>
               <select value={shiftDirection} onChange={(e) => setShiftDirection(e.target.value)} className="flex-1 text-xs border rounded px-1.5 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB" }}>
                 <option value="before">이전 평일</option>
                 <option value="after">이후 평일</option>
@@ -1247,7 +1265,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
         title: title.trim(),
         frequency: "monthly",
         months: null,
-        dayOfMonth: Math.min(31, Math.max(1, Number(recurDayOfMonth) || 1)),
+        dayOfMonth: recurDayOfMonth === LAST_DAY_OF_MONTH ? LAST_DAY_OF_MONTH : Math.min(31, Math.max(1, Number(recurDayOfMonth) || 1)),
         shiftDirection: recurShiftDirection,
         kind: companyKind,
         note: companyNote.trim(),
@@ -1419,8 +1437,18 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
               <div className="space-y-1.5">
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>매월</span>
-                  <input type="number" min="1" max="31" value={recurDayOfMonth} onChange={(e) => setRecurDayOfMonth(e.target.value)} className="w-16 text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }} />
-                  <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>일 · 휴무 시</span>
+                  <select
+                    value={recurDayOfMonth === LAST_DAY_OF_MONTH ? "last" : recurDayOfMonth}
+                    onChange={(e) => setRecurDayOfMonth(e.target.value === "last" ? LAST_DAY_OF_MONTH : Number(e.target.value))}
+                    className="w-20 text-sm border rounded px-1.5 py-1.5"
+                    style={{ borderColor: "#E5E7EB", fontFamily: FONT_MONO }}
+                  >
+                    {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                      <option key={d} value={d}>{d}일</option>
+                    ))}
+                    <option value="last">말일</option>
+                  </select>
+                  <span className="text-xs whitespace-nowrap" style={{ color: "#6B7280" }}>· 휴무 시</span>
                   <select value={recurShiftDirection} onChange={(e) => setRecurShiftDirection(e.target.value)} className="flex-1 text-sm border rounded px-1.5 py-1.5 min-w-0" style={{ borderColor: "#E5E7EB" }}>
                     <option value="before">이전 평일</option>
                     <option value="after">이후 평일</option>
