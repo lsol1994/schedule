@@ -20,6 +20,28 @@
 <body>
 <div id="root"></div>
 
+<script>
+// ─── 앱 버전 / 새 버전 감지 ───
+// 배포마다 이 값과 저장소 루트의 version.txt를 같은 값으로 올려야 함 (한쪽만 바꾸면 새 버전 감지가 안 됨)
+const APP_BUILD = '26_11_09_01';
+function checkForNewVersion() {
+  fetch('version.txt?t=' + Date.now(), { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.text() : null; })
+    .then(function (txt) {
+      if (!txt) return;
+      var remote = txt.trim();
+      if (!remote || remote === APP_BUILD || document.getElementById('app-update-banner')) return;
+      var el = document.createElement('div');
+      el.id = 'app-update-banner';
+      el.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#0D9488;color:#fff;z-index:999999;padding:10px 14px;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:12px;';
+      el.innerHTML = '새 버전(' + remote + ')이 있어요. <button style="background:#fff;color:#0D9488;border:0;border-radius:6px;padding:4px 10px;font-weight:700;cursor:pointer" onclick="location.reload()">새로고침</button>';
+      document.body.appendChild(el);
+    })
+    .catch(function () {}); // version.txt가 없거나 네트워크 문제면 조용히 무시
+}
+window.addEventListener('load', checkForNewVersion);
+setInterval(checkForNewVersion, 5 * 60 * 1000);
+</script>
 <script type="text/babel">
 const { useState, useEffect, useMemo, useRef } = React;
 
@@ -330,6 +352,601 @@ function parseExcelWorkbook(workbook, existingMembers) {
   });
   return results;
 }
+
+// ===== EXPORT_BLOCK_START =====
+// ------------- 엑셀 다운로드(휴무 실적/계획 + 연차) & 연차 잔여 -------------
+// 팀 스케쥴에 등록된 팀원 = 경영지원실. (공장·제조/유통 인원은 팀 스케쥴에 없으므로 자동 제외)
+const EXPORT_DEPT_LABEL = "경영지원실";
+const DEFAULT_TITLES = { 김경완: "상무", 김효주: "과장", 이솔: "대리", 장윤희: "과장" };
+const EXCELJS_CDN = "https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js";
+const DAY_MARK_LEGEND = [
+  ["●", "휴무"],
+  ["★", "무급"],
+  ["연차", "연차"],
+  ["반차", "반차"],
+  ["◐", "대휴(반차)"],
+  ["경조", "경조"],
+];
+// 원본 양식의 '계' 수식 그대로 사용
+function dayTotalFormula(r) {
+  const rg = `E${r}:AI${r}`;
+  return `(COUNTIF(${rg},"●"))+(COUNTIF(${rg},"★"))+(COUNTIF(${rg},"연차"))+((COUNTIF(${rg},"반차")/2))+((COUNTIF(${rg},"◐")/2))+((COUNTIF(${rg},"◑")/2))+(COUNTIF(${rg},"재택"))+(COUNTIF(${rg},"재택"))+(COUNTIF(${rg},"경조"))`;
+}
+function dayTotalValue(marks) {
+  let t = 0;
+  marks.forEach((mk) => {
+    if (mk === "●" || mk === "★" || mk === "연차" || mk === "경조") t += 1;
+    else if (mk === "반차" || mk === "◐" || mk === "◑") t += 0.5;
+  });
+  return t;
+}
+function memberTitle(m) {
+  return (m && m.title) || (m && DEFAULT_TITLES[m.name]) || "";
+}
+function toNum(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = typeof v === "number" ? v : Number(String(v).replace(/,/g, "").trim());
+  return Number.isFinite(n) ? n : null;
+}
+function arr12(x) {
+  const out = [];
+  for (let i = 0; i < 12; i++) out.push(toNum(x && x[i]) || 0);
+  return out;
+}
+function fmtDays(n) {
+  return Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10);
+}
+
+// 엑셀 연차 파일(2026.09.30 기준, 1~10월 실적 반영) 값. 연차 엑셀을 업로드하면 그 값이 우선한다.
+const LEAVE_SEED = {
+  2026: {
+    basis: "2026년 연차 사용 계획(본사) · 2026.09.30기준 (10월 실적까지)",
+    cutoffMonth: 10,
+    people: {
+      김효주: { accrued: 283, usedBefore: 218, base: 65, plan: [0, 0, 0, 5, 5, 5, 5, 5, 5, 5, 5, 5], actual: [5, 0, 0, 4, 5, 0, 0, 4, 6, 3, 0, 0] },
+      이솔: { accrued: 107, usedBefore: 90, base: 17, plan: [0, 0, 0, 1, 1, 1, 3, 3, 1, 1, 1, 1], actual: [5, 0, 0, 5, 2.5, 3.5, 2, 0, 4, 1, 0, 0] },
+      장윤희: { accrued: 90, usedBefore: 79, base: 11, plan: [1, 1, 1, 1, 1, 1, 1, 3, 0, 0, 1, 2], actual: [4, 10, 0.5, 0.5, 1.5, 0.5, 1, 3, 0.5, 0.5, 0, 0] },
+    },
+  },
+};
+function getLeaveData(member, year) {
+  const own = member && member.leave && member.leave[String(year)];
+  if (own) {
+    return { ...own, plan: arr12(own.plan), actual: arr12(own.actual), cutoffMonth: Number(own.cutoffMonth) || 0, source: "upload" };
+  }
+  const seed = LEAVE_SEED[year];
+  const p = seed && member && seed.people[member.name];
+  if (p) return { ...p, plan: arr12(p.plan), actual: arr12(p.actual), cutoffMonth: seed.cutoffMonth, basis: seed.basis, source: "seed" };
+  return null;
+}
+
+// 한 팀원의 한 달 표시값(31칸). 해당 월에 없는 날짜는 null.
+function buildMonthMarks(year, month, memberId, schedules, holidayMap, autoWeekend) {
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const byDay = {};
+  const first = new Date(year, month - 1, 1);
+  const last = new Date(year, month - 1, daysInMonth);
+  schedules.forEach((s) => {
+    if (s.memberId !== memberId) return;
+    const startKey = s.startDate || s.date;
+    const endKey = s.endDate || s.startDate || s.date;
+    if (!startKey) return;
+    let cursor = parseKey(startKey);
+    const end = parseKey(endKey);
+    let guard = 0;
+    while (cursor <= end && guard < 400) {
+      if (cursor >= first && cursor <= last) {
+        const d = cursor.getDate();
+        (byDay[d] = byDay[d] || []).push(s.type);
+      }
+      cursor = addDays(cursor, 1);
+      guard++;
+    }
+  });
+  const marks = [];
+  for (let d = 1; d <= 31; d++) {
+    if (d > daysInMonth) {
+      marks.push(null);
+      continue;
+    }
+    const key = toKey(new Date(year, month - 1, d));
+    const nonWorking = isNonWorkingDay(key, holidayMap);
+    const types = byDay[d] || [];
+    const has = (t) => types.includes(t);
+    let mk = "";
+    if (has("휴일근무")) mk = "";
+    else if (nonWorking) {
+      // 주말·공휴일: 휴무로 표시 (연차/반차가 주말에 걸쳐 있어도 연차로 세지 않음)
+      const anyOff = types.some((t) => ["휴무", "연차", "반차", "대체휴무(연차)", "대체휴무(반차)", "경조휴무", "무급"].includes(t));
+      mk = anyOff || autoWeekend ? "●" : "";
+    } else if (has("경조휴무")) mk = "경조";
+    else if (has("연차")) mk = "연차";
+    else if (has("대체휴무(연차)") || has("휴무")) mk = "●";
+    else if (has("무급")) mk = "★";
+    else if (has("대체휴무(반차)")) mk = "◐";
+    else if (has("반차")) mk = "반차";
+    marks.push(mk);
+  }
+  const holidayWorkDays = Object.keys(byDay).filter((d) => byDay[d].includes("휴일근무")).length;
+  return { marks, holidayWorkDays };
+}
+function leaveUsedFromMarks(marks, uptoDay) {
+  let n = 0;
+  marks.forEach((mk, i) => {
+    if (uptoDay && i + 1 > uptoDay) return;
+    if (mk === "연차") n += 1;
+    else if (mk === "반차") n += 0.5;
+  });
+  return n;
+}
+function monthNote(marks, holidayWorkDays) {
+  const parts = [];
+  const leave = leaveUsedFromMarks(marks);
+  if (leave > 0) parts.push(`연차 ${fmtDays(leave)}개 사용`);
+  const half = marks.filter((m) => m === "◐").length;
+  if (half) parts.push(`대휴(반차) ${half}회`);
+  const gyeong = marks.filter((m) => m === "경조").length;
+  if (gyeong) parts.push(`경조 ${gyeong}일`);
+  const unpaid = marks.filter((m) => m === "★").length;
+  if (unpaid) parts.push(`무급 ${unpaid}일`);
+  if (holidayWorkDays) parts.push(`휴일근무 ${holidayWorkDays}일`);
+  return parts.join(", ");
+}
+
+// 연차 월별 사용(엑셀 실적 반영월까지는 엑셀 값, 그 이후는 팀 스케쥴의 연차/반차)
+// refDate가 있으면 그 날짜까지만 팀 스케쥴 사용분을 센다.
+function computeLeaveSummary(member, year, schedules, holidayMap, refDate) {
+  const ld = getLeaveData(member, year);
+  const cutoff = ld ? ld.cutoffMonth : 0;
+  const monthly = [];
+  for (let m = 1; m <= 12; m++) {
+    if (ld && m <= cutoff) {
+      monthly.push(ld.actual[m - 1] || 0);
+      continue;
+    }
+    if (refDate) {
+      const refY = refDate.getFullYear();
+      const refM = refDate.getMonth() + 1;
+      if (year > refY || (year === refY && m > refM)) {
+        monthly.push(0);
+        continue;
+      }
+    }
+    const { marks } = buildMonthMarks(year, m, member.id, schedules, holidayMap, false);
+    let upto = null;
+    if (refDate && refDate.getFullYear() === year && refDate.getMonth() + 1 === m) upto = refDate.getDate();
+    monthly.push(leaveUsedFromMarks(marks, upto));
+  }
+  const used = monthly.reduce((a, b) => a + b, 0);
+  return {
+    hasData: !!ld,
+    ld,
+    monthly,
+    used,
+    remaining: ld ? Math.round((ld.base - used) * 10) / 10 : null,
+  };
+}
+
+// ---- 연차 사용 엑셀 파싱 (HR '본사(HR)' 양식 / 'YYYY년 연차(본사)' 양식 모두 지원) ----
+function normText(v) {
+  return v === null || v === undefined ? "" : String(v).replace(/\s+/g, "");
+}
+function parseLeaveWorkbook(workbook) {
+  const results = [];
+  workbook.SheetNames.forEach((sheetName) => {
+    const ws = workbook.Sheets[sheetName];
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+    let title = "";
+    let basis = "";
+    for (let r = 0; r < Math.min(aoa.length, 5); r++) {
+      (aoa[r] || []).forEach((v) => {
+        const t = v === null || v === undefined ? "" : String(v);
+        if (/연차/.test(t) && /\d{4}\s*년/.test(t) && !title) title = t;
+        if (/\d{4}\.\d{1,2}\.\d{1,2}\s*기준/.test(t)) basis = t.trim();
+      });
+    }
+    // 이 앱에서 내려받은 파일(작성 기준 문구에 '팀 스케쥴')은 다시 반영하지 않는다 — 스케쥴 값이 고정돼 버리는 것을 방지
+    const ownExport = aoa.slice(0, 5).some((row) => (row || []).some((v) => typeof v === "string" && v.includes("팀 스케쥴")));
+    if (ownExport) return;
+    const yearMatch = (title || sheetName).match(/(\d{4})\s*년/);
+    if (!/연차/.test(title + sheetName) || !yearMatch) return;
+    const year = Number(yearMatch[1]);
+
+    const headerIdx = aoa.findIndex((row) => (row || []).some((v) => normText(v) === "성명"));
+    if (headerIdx < 0) return;
+    const header = aoa[headerIdx] || [];
+    const sub = aoa[headerIdx + 1] || [];
+    const nameCol = header.findIndex((v) => normText(v) === "성명");
+    const titleCol = header.findIndex((v) => normText(v) === "직급");
+    // 같은 그룹(병합 셀)의 열들을 찾기 위해 그룹 헤더를 오른쪽으로 채운다
+    const groupOf = [];
+    let cur = "";
+    const width = Math.max(header.length, sub.length);
+    for (let c = 0; c < width; c++) {
+      if (header[c] !== null && header[c] !== undefined && normText(header[c]) !== "") cur = normText(header[c]);
+      groupOf.push(cur);
+    }
+    const monthCols = (keyword) => {
+      const cols = new Array(12).fill(-1);
+      for (let c = 0; c < width; c++) {
+        if (!groupOf[c].includes(keyword) || !groupOf[c].includes("연차(")) continue;
+        const n = toNum(sub[c]);
+        if (n && n >= 1 && n <= 12 && Number.isInteger(n) && cols[n - 1] < 0) cols[n - 1] = c;
+      }
+      return cols;
+    };
+    const actualCols = monthCols("실적");
+    const planCols = monthCols("계획");
+    if (actualCols.every((c) => c < 0)) return;
+    const firstActual = Math.min(...actualCols.filter((c) => c >= 0));
+    let accruedCol = -1;
+    let usedCol = -1;
+    let addCol = -1;
+    let baseCol = -1;
+    for (let c = 0; c < firstActual; c++) {
+      const h = normText(header[c]);
+      const s = normText(sub[c]);
+      if (accruedCol < 0 && s.includes("발생") && !s.includes("추가")) accruedCol = c;
+      else if (accruedCol >= 0 && usedCol < 0 && s.includes("사용")) usedCol = c;
+      if (s.includes("추가분")) addCol = c;
+      if (h.includes("(A)") || h.startsWith("잔여+")) baseCol = c;
+    }
+
+    let dept = "";
+    const people = [];
+    for (let r = headerIdx + 2; r < aoa.length; r++) {
+      const row = aoa[r] || [];
+      if (row[0] !== null && row[0] !== undefined && normText(row[0]) !== "") dept = normText(row[0]);
+      const name = row[nameCol];
+      if (!name || normText(name) === "") continue;
+      if (dept && !dept.includes(EXCEL_TARGET_DEPT)) continue;
+      const accruedRaw = accruedCol >= 0 ? toNum(row[accruedCol]) : null;
+      const usedBefore = usedCol >= 0 ? toNum(row[usedCol]) : null;
+      const add = addCol >= 0 ? toNum(row[addCol]) || 0 : 0;
+      let base = null;
+      let accrued = null;
+      if (accruedRaw !== null) {
+        accrued = accruedRaw + add;
+        base = accrued - (usedBefore || 0);
+      } else if (baseCol >= 0 && toNum(row[baseCol]) !== null) {
+        base = toNum(row[baseCol]);
+      }
+      if (base === null) continue; // 발생/잔여 정보가 없는 사람은 제외
+      const actualRaw = actualCols.map((c) => (c >= 0 ? toNum(row[c]) : null));
+      people.push({
+        name: String(name).trim(),
+        title: titleCol >= 0 && row[titleCol] ? String(row[titleCol]).trim() : "",
+        accrued,
+        usedBefore: usedBefore || 0,
+        base: Math.round(base * 10) / 10,
+        plan: planCols.map((c) => (c >= 0 ? toNum(row[c]) || 0 : 0)),
+        actualRaw,
+      });
+    }
+    if (people.length === 0) return;
+    // 실적이 입력된 마지막 달(사람별). 실제 반영 기준월은 팀 스케쥴에 있는 사람들만으로 정한다(leaveCutoffFor).
+    people.forEach((p) => {
+      p.lastMonth = 0;
+      p.actualRaw.forEach((v, i) => {
+        if (v !== null && i + 1 > p.lastMonth) p.lastMonth = i + 1;
+      });
+      p.actual = p.actualRaw.map((v) => v || 0);
+      delete p.actualRaw;
+    });
+    results.push({ year, sheetName, basis: [title.trim(), basis].filter(Boolean).join(" · "), people });
+  });
+  return results;
+}
+
+function leaveCutoffFor(sheet, members) {
+  let cut = 0;
+  sheet.people.forEach((p) => {
+    if (members.some((m) => m.name === p.name) && p.lastMonth > cut) cut = p.lastMonth;
+  });
+  return cut;
+}
+
+// ---- 엑셀 파일 만들기 (ExcelJS: 서식·병합·수식 지원) ----
+let excelJsPromise = null;
+function loadExcelJS() {
+  if (window.ExcelJS) return Promise.resolve(window.ExcelJS);
+  if (!excelJsPromise) {
+    excelJsPromise = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = EXCELJS_CDN;
+      s.onload = () => resolve(window.ExcelJS);
+      s.onerror = () => {
+        excelJsPromise = null;
+        reject(new Error("ExcelJS load failed"));
+      };
+      document.head.appendChild(s);
+    });
+  }
+  return excelJsPromise;
+}
+const XL_FONT = "맑은 고딕";
+const XL_THIN = { style: "thin", color: { argb: "FF000000" } };
+const XL_HAIR = { style: "hair", color: { argb: "FF000000" } };
+const XL_MED = { style: "medium", color: { argb: "FF000000" } };
+const XL_HEAD_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F2F2" } };
+const XL_OFF_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFCCFF99" } };
+const XL_CENTER = { horizontal: "center", vertical: "middle", wrapText: true };
+function colLetter(n) {
+  let s = "";
+  while (n > 0) {
+    const m = (n - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+function styleCell(cell, opts = {}) {
+  cell.font = { name: XL_FONT, size: opts.size || 8, bold: !!opts.bold, color: opts.color ? { argb: opts.color } : undefined };
+  cell.alignment = opts.align || XL_CENTER;
+  if (opts.fill) cell.fill = opts.fill;
+  if (opts.border !== false) {
+    const b = opts.borderStyle || XL_THIN;
+    cell.border = { top: b, left: b, bottom: b, right: b };
+  }
+  if (opts.numFmt) cell.numFmt = opts.numFmt;
+}
+function safeSheetName(name) {
+  return name.replace(/[\\/?*\[\]:]/g, " ").slice(0, 31);
+}
+
+// rows: [{ name, title, marks[31], note }]
+function addMonthSheet(wb, { year, month, kind, rows, holidayMap, holidayWorkTotal }) {
+  const ws = wb.addWorksheet(safeSheetName(`${year}년 ${month}월 ${kind} 본사`), {
+    pageSetup: { orientation: "landscape", paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+    views: [{ showGridLines: false }],
+  });
+  const widths = { 1: 8.25, 2: 4, 3: 7, 4: 6.75, 36: 4.5, 37: 30, 38: 2, 39: 4.5, 40: 10.6 };
+  for (let c = 1; c <= 40; c++) ws.getColumn(c).width = widths[c] || (c >= 5 && c <= 35 ? 3.6 : 8);
+  ws.getRow(2).height = 31.5;
+  ws.mergeCells("A2:AK2");
+  const t = ws.getCell("A2");
+  t.value = `${month}월 휴무 ${kind}(본사)`;
+  styleCell(t, { size: 20, border: false });
+  const dh = ws.getCell("AK3");
+  dh.value = `대휴발생 : ${holidayWorkTotal}개`;
+  styleCell(dh, { size: 8, bold: true, color: "FFFF0000", border: false, align: { horizontal: "right", vertical: "middle" } });
+
+  ws.mergeCells("A4:B5");
+  ws.mergeCells("C4:C5");
+  ws.mergeCells("D4:D5");
+  ws.mergeCells("AJ4:AJ5");
+  ws.mergeCells("AK4:AK5");
+  [["A4", "구분"], ["C4", "성명"], ["D4", "직급"], ["AJ4", "계"], ["AK4", "비고"]].forEach(([addr, v]) => {
+    ws.getCell(addr).value = v;
+  });
+  const daysInMonth = new Date(year, month, 0).getDate();
+  for (let d = 1; d <= 31; d++) {
+    const col = 4 + d;
+    const wd = ws.getCell(4, col);
+    const dn = ws.getCell(5, col);
+    let color;
+    if (d <= daysInMonth) {
+      const date = new Date(year, month - 1, d);
+      const dow = date.getDay();
+      wd.value = WEEKDAYS[dow];
+      dn.value = d;
+      if (dow === 0 || holidayMap[toKey(date)]) color = "FFFF0000";
+      else if (dow === 6) color = "FF0070C0";
+    }
+    styleCell(wd, { bold: true, fill: XL_HEAD_FILL, color });
+    styleCell(dn, { bold: true, fill: XL_HEAD_FILL, color });
+  }
+  ["A4", "B4", "C4", "D4", "A5", "B5", "C5", "D5", "AJ4", "AK4", "AJ5", "AK5"].forEach((a) => styleCell(ws.getCell(a), { bold: true, fill: XL_HEAD_FILL }));
+
+  const startRow = 6;
+  rows.forEach((p, i) => {
+    const r = startRow + i;
+    ws.getRow(r).height = 16.5;
+    ws.getCell(r, 3).value = p.name;
+    ws.getCell(r, 4).value = p.title;
+    styleCell(ws.getCell(r, 1), { bold: true });
+    styleCell(ws.getCell(r, 2), { bold: true });
+    styleCell(ws.getCell(r, 3));
+    styleCell(ws.getCell(r, 4));
+    for (let d = 1; d <= 31; d++) {
+      const c = ws.getCell(r, 4 + d);
+      const mk = p.marks[d - 1];
+      if (mk) c.value = mk;
+      styleCell(c, { borderStyle: XL_HAIR, fill: mk === "●" ? XL_OFF_FILL : undefined });
+    }
+    const tot = ws.getCell(r, 36);
+    tot.value = { formula: dayTotalFormula(r), result: dayTotalValue(p.marks.filter(Boolean)) };
+    styleCell(tot);
+    const note = ws.getCell(r, 37);
+    note.value = p.note || null;
+    styleCell(note, { align: { horizontal: "left", vertical: "middle", wrapText: true } });
+  });
+  if (rows.length > 0) {
+    ws.mergeCells(startRow, 1, startRow + rows.length - 1, 2);
+    ws.getCell(startRow, 1).value = EXPORT_DEPT_LABEL;
+  }
+  DAY_MARK_LEGEND.forEach(([mk, label], i) => {
+    const r = startRow + i;
+    const a = ws.getCell(r, 39);
+    const b = ws.getCell(r, 40);
+    a.value = mk;
+    b.value = label;
+    styleCell(a, { size: 9, fill: mk === "●" ? XL_OFF_FILL : undefined });
+    styleCell(b, { size: 9, border: false });
+  });
+  return ws;
+}
+
+// rows: [{ name, title, plan[12], accrued, usedBefore, actual[12], hasData }]
+function addLeaveSheet(wb, { year, rows, basisText }) {
+  const ws = wb.addWorksheet(safeSheetName(`${year}년 연차(본사)`), {
+    pageSetup: { orientation: "landscape", paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+    views: [{ showGridLines: false }],
+  });
+  const widths = { 1: 4.4, 2: 7.4, 3: 9, 4: 4.5, 17: 5.75, 18: 6.6, 19: 6.6, 32: 5.75, 33: 6.6, 34: 6.6, 35: 6.6, 36: 40 };
+  for (let c = 1; c <= 36; c++) ws.getColumn(c).width = widths[c] || 4.8;
+  ws.mergeCells("A2:AI3");
+  const t = ws.getCell("A2");
+  t.value = `${year}년 연차 사용 계획(본사)`;
+  styleCell(t, { size: 20, bold: true, border: false });
+  ws.mergeCells("A4:D4");
+  const sec = ws.getCell("A4");
+  sec.value = "● HR 사업부 ";
+  styleCell(sec, { size: 12, bold: true, border: false });
+  const bs = ws.getCell("AJ4");
+  bs.value = basisText || "";
+  styleCell(bs, { size: 8, border: false, color: "FF6B7280", align: { horizontal: "right", vertical: "middle", wrapText: true } });
+
+  ws.mergeCells("A5:B6");
+  ws.mergeCells("C5:C6");
+  ws.mergeCells("D5:D6");
+  ws.mergeCells("E5:Q5");
+  ws.mergeCells("R5:S5");
+  ws.mergeCells("T5:AF5");
+  ws.mergeCells("AG5:AI5");
+  ws.mergeCells("AJ5:AJ6");
+  [["A5", "구분"], ["C5", "성명"], ["D5", "직급"], ["E5", `${year}년 연차(계획)`], ["R5", "연차사용"], ["T5", `${year}년 연차(실적)`], ["AG5", "연차사용"], ["AJ5", "비고(미사용 사유)"]].forEach(([a, v]) => {
+    ws.getCell(a).value = v;
+  });
+  for (let m = 1; m <= 12; m++) {
+    ws.getCell(6, 4 + m).value = String(m);
+    ws.getCell(6, 19 + m).value = String(m);
+  }
+  ws.getCell(6, 17).value = "계";
+  ws.getCell(6, 18).value = "발생\n연차";
+  ws.getCell(6, 19).value = "사용연차";
+  ws.getCell(6, 32).value = "계";
+  ws.getCell(6, 33).value = "잔여";
+  ws.getCell(6, 34).value = "사용";
+  ws.getCell(6, 35).value = "미사용";
+  for (let c = 1; c <= 36; c++) {
+    styleCell(ws.getCell(5, c), { bold: true, size: 9, fill: XL_HEAD_FILL });
+    styleCell(ws.getCell(6, c), { bold: true, size: 9, fill: XL_HEAD_FILL });
+  }
+  ws.getRow(6).height = 26;
+
+  const startRow = 7;
+  const sum = (a) => a.reduce((x, y) => x + (y || 0), 0);
+  rows.forEach((p, i) => {
+    const r = startRow + i;
+    ws.getRow(r).height = 16.5;
+    ws.getCell(r, 3).value = p.name;
+    ws.getCell(r, 4).value = p.title;
+    for (let m = 1; m <= 12; m++) {
+      const pv = p.plan ? p.plan[m - 1] : 0;
+      const av = p.actual[m - 1];
+      if (pv) ws.getCell(r, 4 + m).value = pv;
+      if (av) ws.getCell(r, 19 + m).value = av;
+    }
+    const planTotal = p.plan ? sum(p.plan) : 0;
+    const actTotal = sum(p.actual);
+    ws.getCell(r, 17).value = { formula: `SUM(E${r}:P${r})`, result: planTotal };
+    ws.getCell(r, 32).value = { formula: `SUM(T${r}:AE${r})`, result: actTotal };
+    if (p.hasData) {
+      if (p.accrued !== null && p.accrued !== undefined) {
+        ws.getCell(r, 18).value = p.accrued;
+        ws.getCell(r, 19).value = p.usedBefore;
+        ws.getCell(r, 33).value = { formula: `R${r}-S${r}`, result: p.accrued - p.usedBefore };
+      } else {
+        ws.getCell(r, 33).value = p.base;
+      }
+      ws.getCell(r, 34).value = { formula: `AF${r}`, result: actTotal };
+      ws.getCell(r, 35).value = { formula: `AG${r}-AH${r}`, result: Math.round((p.base - actTotal) * 10) / 10 };
+    }
+    ws.getCell(r, 36).value = p.note || null;
+    for (let c = 1; c <= 36; c++) {
+      styleCell(ws.getCell(r, c), {
+        size: c <= 2 ? 8 : 9,
+        bold: c <= 2,
+        numFmt: c >= 5 && c <= 35 ? 'General;[Red]-General;"-"' : undefined,
+        align: c === 36 ? { horizontal: "left", vertical: "middle", wrapText: true } : XL_CENTER,
+      });
+    }
+  });
+  if (rows.length > 0) {
+    ws.mergeCells(startRow, 1, startRow + rows.length - 1, 2);
+    ws.getCell(startRow, 1).value = EXPORT_DEPT_LABEL;
+  }
+  return ws;
+}
+
+function buildMonthRows(year, month, members, schedules, holidayMap, autoWeekend) {
+  let holidayWorkTotal = 0;
+  const rows = members.map((m) => {
+    const { marks, holidayWorkDays } = buildMonthMarks(year, month, m.id, schedules, holidayMap, autoWeekend);
+    holidayWorkTotal += holidayWorkDays;
+    return { name: m.name, title: memberTitle(m), marks, note: monthNote(marks.filter((x) => x !== null), holidayWorkDays) };
+  });
+  return { rows, holidayWorkTotal };
+}
+function buildLeaveRows(year, members, schedules, holidayMap, refDate) {
+  return members.map((m) => {
+    const s = computeLeaveSummary(m, year, schedules, holidayMap, refDate);
+    return {
+      name: m.name,
+      title: memberTitle(m),
+      plan: s.ld ? s.ld.plan : null,
+      accrued: s.ld ? (s.ld.accrued === undefined ? null : s.ld.accrued) : null,
+      usedBefore: s.ld ? s.ld.usedBefore || 0 : 0,
+      base: s.ld ? s.ld.base : null,
+      actual: s.monthly,
+      hasData: s.hasData,
+      cutoff: s.ld ? s.ld.cutoffMonth : 0,
+    };
+  });
+}
+function leaveBasisText(rows, year, refDate) {
+  const cut = Math.max(0, ...rows.map((r) => r.cutoff || 0));
+  const today = refDate || new Date();
+  const stamp = `${today.getFullYear()}.${pad(today.getMonth() + 1)}.${pad(today.getDate())}`;
+  if (cut >= 12) return `1~12월: 연차 엑셀 실적 (${stamp} 작성)`;
+  if (cut > 0) return `1~${cut}월: 연차 엑셀 실적 / ${cut + 1}월~: 팀 스케쥴 (${stamp} 기준)`;
+  return `팀 스케쥴 기준 (${stamp})`;
+}
+
+// mode: "month" | "year"
+async function generateScheduleWorkbook({ mode, year, month, members, schedules, holidayMap, autoWeekend, today }) {
+  const ExcelJSLib = await loadExcelJS();
+  const wb = new ExcelJSLib.Workbook();
+  wb.creator = "팀 스케줄 캘린더";
+  const now = today || new Date();
+  let fileName;
+  let refDate;
+  if (mode === "month") {
+    const nY = month === 12 ? year + 1 : year;
+    const nM = month === 12 ? 1 : month + 1;
+    const cur = buildMonthRows(year, month, members, schedules, holidayMap, autoWeekend);
+    addMonthSheet(wb, { year, month, kind: "실적", rows: cur.rows, holidayMap, holidayWorkTotal: cur.holidayWorkTotal });
+    const nxt = buildMonthRows(nY, nM, members, schedules, holidayMap, autoWeekend);
+    addMonthSheet(wb, { year: nY, month: nM, kind: "계획", rows: nxt.rows, holidayMap, holidayWorkTotal: nxt.holidayWorkTotal });
+    refDate = new Date(year, month, 0); // 선택한 달 말일까지 실적
+    fileName = `${year}년 ${pad(month)}월 실적 및 ${nY}년 ${pad(nM)}월 계획(본사).xlsx`;
+  } else {
+    for (let m = 1; m <= 12; m++) {
+      const isPast = year < now.getFullYear() || (year === now.getFullYear() && m <= now.getMonth() + 1);
+      const b = buildMonthRows(year, m, members, schedules, holidayMap, autoWeekend);
+      addMonthSheet(wb, { year, month: m, kind: isPast ? "실적" : "계획", rows: b.rows, holidayMap, holidayWorkTotal: b.holidayWorkTotal });
+    }
+    refDate = year < now.getFullYear() ? new Date(year, 11, 31) : now;
+    fileName = `${year}년 휴무 실적 및 연차(본사).xlsx`;
+  }
+  const leaveRows = buildLeaveRows(year, members, schedules, holidayMap, refDate);
+  addLeaveSheet(wb, { year, rows: leaveRows, basisText: leaveBasisText(leaveRows, year, refDate) });
+  const buffer = await wb.xlsx.writeBuffer();
+  return { buffer, fileName };
+}
+function downloadBuffer(buffer, fileName) {
+  const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+// ===== EXPORT_BLOCK_END =====
 
 // ------------- style helpers -------------
 // 연차/반차: 동일한 양식(채워진 필/보더 없음)이되, 색의 짙음(연차)과 옅음(반차)으로만 구분한다.
@@ -821,7 +1438,7 @@ function FilterBar({ members, filterMembers, filterTypes, toggleMember, toggleTy
   );
 }
 
-function MemberManager({ members, onAdd, onUpdate, onDelete }) {
+function MemberManager({ members, onAdd, onUpdate, onDelete, leaveInfo, leaveYear }) {
   const [open, setOpen] = useState(true);
   const [name, setName] = useState("");
   const [total, setTotal] = useState(15);
@@ -871,7 +1488,21 @@ function MemberManager({ members, onAdd, onUpdate, onDelete }) {
                   <span className="flex items-center gap-1.5">
                     <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color.bg }} />
                     {m.name}
-                    <span style={{ color: "#9CA3AF" }}>(연 {m.annualTotal}일)</span>
+                    {(() => {
+                      const li = leaveInfo && leaveInfo[m.id];
+                      if (!li || !li.hasData) return <span style={{ color: "#9CA3AF" }}>(연 {m.annualTotal}일)</span>;
+                      const neg = li.remaining < 0;
+                      const tip =
+                        `${leaveYear}년 연초 잔여(잔여+추가분) ${fmtDays(li.ld.base)}일 − 사용 ${fmtDays(li.used)}일` +
+                        `\n1~${li.ld.cutoffMonth}월: 연차 엑셀 실적, 이후: 팀 스케쥴 연차/반차(오늘까지)` +
+                        (li.planned !== li.remaining ? `\n이후 예정 포함 시 ${fmtDays(li.planned)}일` : "");
+                      return (
+                        <span title={tip} style={{ color: neg ? "#DC2626" : "#0F766E", fontWeight: 600 }}>
+                          잔여 {fmtDays(li.remaining)}일
+                          {li.planned !== li.remaining && <span style={{ color: "#9CA3AF", fontWeight: 400 }}> (예정 포함 {fmtDays(li.planned)})</span>}
+                        </span>
+                      );
+                    })()}
                   </span>
                   <span className="flex items-center gap-2">
                     <button onClick={() => startEdit(m)} className="p-1.5 -m-1.5"><Pencil size={12} color="#9CA3AF" /></button>
@@ -1749,6 +2380,166 @@ function ExcelImportModal({ preview, busy, onCancel, onConfirm }) {
   );
 }
 
+function LeaveImportModal({ preview, members, onCancel, onConfirm }) {
+  if (!preview) return null;
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onCancel}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6 overflow-y-auto" style={{ maxHeight: "85vh" }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-base font-bold" style={{ color: "#111827" }}>연차 잔여 반영 확인</h3>
+          <button onClick={onCancel} className="p-1 -m-1"><X size={18} color="#9CA3AF" /></button>
+        </div>
+        <div className="space-y-3 text-xs" style={{ color: "#374151" }}>
+          {preview.map((sheet) => {
+            const cutoff = leaveCutoffFor(sheet, members);
+            const matched = sheet.people.filter((p) => members.some((m) => m.name === p.name));
+            const skipped = sheet.people.filter((p) => !members.some((m) => m.name === p.name));
+            return (
+              <div key={sheet.sheetName} className="border rounded p-3" style={{ borderColor: "#EEF0F3" }}>
+                <p className="font-bold mb-1">
+                  {sheet.year}년 · {sheet.sheetName} <span style={{ color: "#9CA3AF", fontWeight: 400 }}>{sheet.basis}</span>
+                </p>
+                <p className="mb-2" style={{ color: "#6B7280" }}>1~{cutoff}월은 이 엑셀의 실적을, {cutoff + 1}월부터는 팀 스케쥴의 연차/반차를 사용해서 잔여를 계산해요.</p>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr style={{ color: "#6B7280" }}>
+                      <th className="text-left py-1">이름</th>
+                      <th className="text-right py-1">연초 잔여(A)</th>
+                      <th className="text-right py-1">1~{cutoff}월 사용</th>
+                      <th className="text-right py-1">잔여</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {matched.map((p) => {
+                      const used = p.actual.slice(0, cutoff).reduce((a, b) => a + b, 0);
+                      const rem = Math.round((p.base - used) * 10) / 10;
+                      return (
+                        <tr key={p.name} className="border-t" style={{ borderColor: "#F3F4F6" }}>
+                          <td className="py-1 font-semibold">{p.name}{p.title ? ` (${p.title})` : ""}</td>
+                          <td className="text-right py-1">{fmtDays(p.base)}</td>
+                          <td className="text-right py-1">{fmtDays(used)}</td>
+                          <td className="text-right py-1 font-semibold" style={{ color: rem < 0 ? "#DC2626" : "#0F766E" }}>{fmtDays(rem)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {matched.length === 0 && <p style={{ color: "#DC2626" }}>팀 스케쥴에 있는 팀원과 이름이 일치하는 사람이 없어요.</p>}
+                {skipped.length > 0 && <p className="mt-2" style={{ color: "#9CA3AF" }}>팀 스케쥴에 없어 제외: {skipped.map((p) => p.name).join(", ")}</p>}
+              </div>
+            );
+          })}
+          <p style={{ color: "#6B7280" }}>잔여 연차는 팀원 관리에 바로 표시돼요. 같은 연도 값이 이미 있으면 이번 값으로 교체돼요.</p>
+        </div>
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button onClick={onCancel} className="text-xs font-semibold px-3 py-2 rounded border" style={{ borderColor: "#E5E7EB", color: "#374151" }}>취소</button>
+          <button onClick={onConfirm} className="text-xs font-semibold px-3 py-2 rounded text-white" style={{ backgroundColor: ACCENT }}>반영하기</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExcelExportModal({ open, onClose, members, schedules, holidayMap, defaultDate }) {
+  const [mode, setMode] = useState("month");
+  const [year, setYear] = useState(defaultDate.getFullYear());
+  const [month, setMonth] = useState(defaultDate.getMonth() + 1);
+  const [selected, setSelected] = useState(new Set());
+  const [autoWeekend, setAutoWeekend] = useState(true);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    setYear(defaultDate.getFullYear());
+    setMonth(defaultDate.getMonth() + 1);
+    setSelected(new Set(members.map((m) => m.id)));
+    // eslint-disable-next-line
+  }, [open]);
+  if (!open) return null;
+  const thisYear = new Date().getFullYear();
+  const years = [thisYear - 2, thisYear - 1, thisYear, thisYear + 1];
+  const nY = month === 12 ? year + 1 : year;
+  const nM = month === 12 ? 1 : month + 1;
+  const toggle = (id) => {
+    const next = new Set(selected);
+    next.has(id) ? next.delete(id) : next.add(id);
+    setSelected(next);
+  };
+  const run = async () => {
+    const chosen = members.filter((m) => selected.has(m.id));
+    if (chosen.length === 0) {
+      alert("다운로드할 팀원을 한 명 이상 선택해 주세요.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const { buffer, fileName } = await generateScheduleWorkbook({ mode, year, month, members: chosen, schedules, holidayMap, autoWeekend });
+      downloadBuffer(buffer, fileName);
+      onClose();
+    } catch (err) {
+      console.error(err);
+      alert("엑셀 파일을 만드는 중 문제가 발생했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const seg = (active) => (active ? { backgroundColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", color: "#6B7280" });
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 overflow-y-auto" style={{ maxHeight: "85vh" }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-base font-bold" style={{ color: "#111827" }}>휴무 실적·계획 엑셀 다운로드</h3>
+          <button onClick={onClose} className="p-1 -m-1"><X size={18} color="#9CA3AF" /></button>
+        </div>
+        <div className="space-y-4 text-xs" style={{ color: "#374151" }}>
+          <div className="flex items-center rounded-lg border overflow-hidden w-fit" style={{ borderColor: "#E5E7EB" }}>
+            <button onClick={() => setMode("month")} className="text-xs font-semibold px-3 py-2" style={seg(mode === "month")}>월별</button>
+            <button onClick={() => setMode("year")} className="text-xs font-semibold px-3 py-2" style={seg(mode === "year")}>연도별</button>
+          </div>
+          <div className="flex items-center gap-2">
+            <select value={year} onChange={(e) => setYear(Number(e.target.value))} className="text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }}>
+              {years.map((y) => <option key={y} value={y}>{y}년</option>)}
+            </select>
+            {mode === "month" && (
+              <select value={month} onChange={(e) => setMonth(Number(e.target.value))} className="text-sm border rounded px-2 py-1.5" style={{ borderColor: "#E5E7EB" }}>
+                {ALL_MONTHS.map((m) => <option key={m} value={m}>{m}월</option>)}
+              </select>
+            )}
+          </div>
+          <div className="rounded p-3" style={{ backgroundColor: "#F9FAFB", color: "#4B5563" }}>
+            {mode === "month" ? (
+              <>시트: <b>{year}년 {month}월 실적</b> · <b>{nY}년 {nM}월 계획</b> · <b>{year}년 연차(본사)</b></>
+            ) : (
+              <>시트: <b>{year}년 1~12월</b> (지난 달까지는 실적, 이후는 계획) · <b>{year}년 연차(본사)</b></>
+            )}
+          </div>
+          <div>
+            <p className="font-semibold mb-1.5">포함할 팀원 <span style={{ color: "#9CA3AF", fontWeight: 400 }}>· 구분: {EXPORT_DEPT_LABEL}</span></p>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {members.map((m) => (
+                <label key={m.id} className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" checked={selected.has(m.id)} onChange={() => toggle(m.id)} />
+                  {m.name}{memberTitle(m) ? ` ${memberTitle(m)}` : ""}
+                </label>
+              ))}
+            </div>
+          </div>
+          <label className="flex items-start gap-1.5 cursor-pointer">
+            <input type="checkbox" checked={autoWeekend} onChange={(e) => setAutoWeekend(e.target.checked)} className="mt-0.5" />
+            <span>주말·공휴일은 자동으로 ●(휴무) 표시 <span style={{ color: "#9CA3AF" }}>— '휴일근무'로 등록한 날은 빈칸(근무)으로 남겨요</span></span>
+          </label>
+          <p style={{ color: "#9CA3AF" }}>표시 기준: 휴무·대체휴무(연차) ●, 연차, 반차, 대체휴무(반차) ◐, 경조휴무 경조, 무급 ★. 외부/내부일정은 넣지 않아요.</p>
+        </div>
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button onClick={onClose} className="text-xs font-semibold px-3 py-2 rounded border" style={{ borderColor: "#E5E7EB", color: "#374151" }}>취소</button>
+          <button onClick={run} disabled={busy} className="text-xs font-semibold px-3 py-2 rounded text-white flex items-center gap-1 disabled:opacity-50" style={{ backgroundColor: ACCENT }}>
+            <Download size={14} /> {busy ? "만드는 중..." : "엑셀 다운로드"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RecurringInfoModal({ target, onClose, onDeleteTemplate, onSetOverride }) {
   const [mode, setMode] = useState("view"); // "view" | "edit"
   const [date, setDate] = useState("");
@@ -1929,6 +2720,8 @@ function App() {
   const [needsSeedConfirm, setNeedsSeedConfirm] = useState(false);
   const [excelPreview, setExcelPreview] = useState(null);
   const [excelBusy, setExcelBusy] = useState(false);
+  const [leavePreview, setLeavePreview] = useState(null);
+  const [exportOpen, setExportOpen] = useState(false);
   const fileInputRef = useRef(null);
 
   // track login state (persists across page reloads automatically)
@@ -2033,6 +2826,23 @@ function App() {
     });
     return map;
   }, [holidays]);
+
+  // 팀원별 잔여 연차 (올해 기준): 연차 엑셀 실적(반영월까지) + 팀 스케쥴 연차/반차(이후)
+  const leaveYear = new Date().getFullYear();
+  const leaveInfo = useMemo(() => {
+    const info = {};
+    const today = new Date();
+    members.forEach((m) => {
+      const now = computeLeaveSummary(m, leaveYear, schedules, holidayMap, today);
+      if (!now.hasData) {
+        info[m.id] = now;
+        return;
+      }
+      const all = computeLeaveSummary(m, leaveYear, schedules, holidayMap, null);
+      info[m.id] = { ...now, planned: all.remaining };
+    });
+    return info;
+  }, [members, schedules, holidayMap, leaveYear]);
 
   const recurringEventMap = useMemo(() => {
     const map = {};
@@ -2333,10 +3143,12 @@ function App() {
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: "array" });
       const results = parseExcelWorkbook(wb, members);
-      if (results.length === 0) {
-        alert('시트 이름에 "계획"이 포함된 시트를 찾지 못했거나, 그 안에서 "경영지원실" 데이터를 찾지 못했습니다. 파일 구조를 확인해 주세요.');
+      const leaveResults = parseLeaveWorkbook(wb);
+      if (results.length === 0 && leaveResults.length === 0) {
+        alert('"계획" 시트(휴무 계획)나 연차 사용 시트에서 "경영지원실" 데이터를 찾지 못했습니다. 파일 구조를 확인해 주세요.');
       } else {
-        setExcelPreview(results);
+        if (results.length > 0) setExcelPreview(results);
+        if (leaveResults.length > 0) setLeavePreview(leaveResults);
       }
     } catch (err) {
       alert("엑셀 파일을 읽는 중 문제가 발생했습니다. 파일 형식을 확인해 주세요.");
@@ -2354,6 +3166,11 @@ function App() {
         if (!nextMembers.some((mm) => mm.name === name)) {
           nextMembers.push({ id: genId("mem"), name, annualTotal: 15 });
         }
+      });
+      // 직급은 엑셀 다운로드 때 쓰이므로, 비어 있으면 엑셀 값으로 채워 둔다
+      sheet.people.forEach((person) => {
+        if (!person.title) return;
+        nextMembers = nextMembers.map((mm) => (mm.name === person.name && !mm.title ? { ...mm, title: person.title } : mm));
       });
     });
     const nameToId = {};
@@ -2388,6 +3205,34 @@ function App() {
     pushToFirebase({ members: nextMembers, schedules: nextSchedules });
     setExcelBusy(false);
     setExcelPreview(null);
+  };
+
+  const applyLeaveImport = () => {
+    if (!leavePreview) return;
+    let nextMembers = [...members];
+    leavePreview.forEach((sheet) => {
+      const cutoffMonth = leaveCutoffFor(sheet, nextMembers);
+      sheet.people.forEach((p) => {
+        nextMembers = nextMembers.map((mm) => {
+          if (mm.name !== p.name) return mm;
+          const leave = { ...(mm.leave || {}) };
+          leave[String(sheet.year)] = {
+            accrued: p.accrued === null ? 0 : p.accrued,
+            usedBefore: p.usedBefore || 0,
+            base: p.base,
+            plan: arr12(p.plan),
+            actual: arr12(p.actual),
+            cutoffMonth,
+            basis: sheet.basis || "",
+            importedAt: toKey(new Date()),
+          };
+          return { ...mm, leave, title: mm.title || p.title || "" };
+        });
+      });
+    });
+    setMembers(nextMembers);
+    pushToFirebase({ members: nextMembers });
+    setLeavePreview(null);
   };
 
   const openPip = async () => {
@@ -2498,6 +3343,9 @@ function App() {
               <button onClick={exportCSV} className="text-xs font-semibold px-3 py-2 rounded border flex items-center gap-1" style={{ borderColor: "#E5E7EB", color: "#374151" }}>
                 <Download size={14} /> CSV 내보내기
               </button>
+              <button onClick={() => setExportOpen(true)} className="text-xs font-semibold px-3 py-2 rounded border flex items-center gap-1" style={{ borderColor: "#E5E7EB", color: "#374151" }}>
+                <Download size={14} /> 엑셀 다운로드
+              </button>
               <input type="file" accept=".xlsx,.xls" ref={fileInputRef} onChange={handleExcelFile} className="hidden" />
               <button
                 onClick={() => fileInputRef.current && fileInputRef.current.click()}
@@ -2527,6 +3375,9 @@ function App() {
             <div className="flex sm:hidden items-center gap-1.5">
               <button onClick={() => openAddModal(toKey(new Date()))} className="text-xs font-semibold px-2.5 py-2 rounded text-white flex items-center gap-1" style={{ backgroundColor: ACCENT }}>
                 <Plus size={13} /> 일정 추가
+              </button>
+              <button onClick={() => setExportOpen(true)} className="text-xs font-semibold px-2 py-2 rounded border flex items-center gap-1 whitespace-nowrap" style={{ borderColor: "#E5E7EB", color: "#374151" }}>
+                <Download size={13} /> 엑셀
               </button>
               <button onClick={() => setChangePasswordOpen(true)} className="text-xs font-semibold px-2 py-2 whitespace-nowrap" style={{ color: "#6B7280" }}>비밀번호 변경</button>
               <button onClick={logout} className="text-xs font-semibold px-2 py-2 whitespace-nowrap" style={{ color: "#DC2626" }}>로그아웃</button>
@@ -2633,7 +3484,7 @@ function App() {
             </div>
           </div>
           <div className="lg:col-span-1 space-y-4">
-            <MemberManager members={members} onAdd={addMember} onUpdate={updateMember} onDelete={deleteMember} />
+            <MemberManager members={members} onAdd={addMember} onUpdate={updateMember} onDelete={deleteMember} leaveInfo={leaveInfo} leaveYear={leaveYear} />
             <HolidayManager holidays={holidays} onAdd={addHoliday} onDelete={deleteHoliday} />
             <RecurringEventManager recurringEvents={recurringEvents} onAdd={addRecurringEvent} onUpdate={updateRecurringEvent} onDelete={deleteRecurringEvent} />
           </div>
@@ -2673,6 +3524,10 @@ function App() {
       <ChangePasswordModal open={changePasswordOpen} onClose={() => setChangePasswordOpen(false)} />
 
       <ExcelImportModal preview={excelPreview} busy={excelBusy} onCancel={() => setExcelPreview(null)} onConfirm={applyExcelImport} />
+
+      {!excelPreview && <LeaveImportModal preview={leavePreview} members={members} onCancel={() => setLeavePreview(null)} onConfirm={applyLeaveImport} />}
+
+      <ExcelExportModal open={exportOpen} onClose={() => setExportOpen(false)} members={members} schedules={schedules} holidayMap={holidayMap} defaultDate={currentDate} />
 
       <RecurringInfoModal
         target={recurringInfoTarget}
