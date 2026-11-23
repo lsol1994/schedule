@@ -23,7 +23,7 @@
 <script>
 // ─── 앱 버전 / 새 버전 감지 ───
 // 배포마다 이 값과 저장소 루트의 version.txt를 같은 값으로 올려야 함 (한쪽만 바꾸면 새 버전 감지가 안 됨)
-const APP_BUILD = '26_11_09_01';
+const APP_BUILD = '26_11_23_01';
 function checkForNewVersion() {
   fetch('version.txt?t=' + Date.now(), { cache: 'no-store' })
     .then(function (r) { return r.ok ? r.text() : null; })
@@ -113,6 +113,14 @@ const MEMBER_COLORS = [
 ];
 
 const LEAVE_TYPES = ["연차", "반차", "휴무", "대체휴무(반차)", "대체휴무(연차)", "휴일근무", "경조휴무"];
+// 휴일근무 단위: "full"(연차·1일) | "half"(반차). 단위가 없는 예전 데이터는 연차(1일)로 본다.
+function holidayWorkUnit(s) {
+  return s && s.holidayWorkUnit === "half" ? "half" : "full";
+}
+function scheduleTypeName(s) {
+  if (s && s.type === "휴일근무") return holidayWorkUnit(s) === "half" ? "휴일근무(반차)" : "휴일근무(연차)";
+  return s ? s.type : "";
+}
 // 반복일정의 "말일"(그 달의 마지막 날) 선택을 나타내는 특수값.
 // 실제 달은 최대 31일까지밖에 없으므로, resolveRecurringDate의 Math.min(day, daysInMonth) 계산에서
 // 이 값은 항상 daysInMonth로 치환되어 그 달의 실제 마지막 날짜가 된다.
@@ -426,6 +434,7 @@ function buildMonthMarks(year, month, memberId, schedules, holidayMap, autoWeeke
   const byDay = {};
   const first = new Date(year, month - 1, 1);
   const last = new Date(year, month - 1, daysInMonth);
+  const hwByDay = {}; // 휴일근무 단위별 가중치(연차 1, 반차 0.5) — 같은 날 중복 등록 시 큰 값
   schedules.forEach((s) => {
     if (s.memberId !== memberId) return;
     const startKey = s.startDate || s.date;
@@ -438,6 +447,7 @@ function buildMonthMarks(year, month, memberId, schedules, holidayMap, autoWeeke
       if (cursor >= first && cursor <= last) {
         const d = cursor.getDate();
         (byDay[d] = byDay[d] || []).push(s.type);
+        if (s.type === "휴일근무") hwByDay[d] = Math.max(hwByDay[d] || 0, holidayWorkUnit(s) === "half" ? 0.5 : 1);
       }
       cursor = addDays(cursor, 1);
       guard++;
@@ -467,8 +477,46 @@ function buildMonthMarks(year, month, memberId, schedules, holidayMap, autoWeeke
     else if (has("반차")) mk = "반차";
     marks.push(mk);
   }
-  const holidayWorkDays = Object.keys(byDay).filter((d) => byDay[d].includes("휴일근무")).length;
-  return { marks, holidayWorkDays };
+  const hwVals = Object.values(hwByDay);
+  const holidayWork = { full: hwVals.filter((v) => v === 1).length, half: hwVals.filter((v) => v === 0.5).length };
+  const holidayWorkDays = holidayWork.full + holidayWork.half * 0.5;
+  return { marks, holidayWorkDays, holidayWork };
+}
+
+// ---- 대휴 상계 ----
+// 휴일근무(연차) ↔ 대체휴무(연차), 휴일근무(반차) ↔ 대체휴무(반차)를 각각 상계한다.
+// 휴일근무는 등록된 모든 날, 대체휴무는 근무일(주말·공휴일 제외)만 센다. 기간 제한 없이 누적.
+// excludeId: 수정 중인 일정은 빼고 계산(등록 창에서 "이번 등록분"을 따로 더하기 위해).
+function countScheduleDays(s, holidayMap, workingOnly) {
+  const startKey = s.startDate || s.date;
+  const endKey = s.endDate || s.startDate || s.date;
+  if (!startKey) return 0;
+  let cursor = parseKey(startKey);
+  const end = parseKey(endKey);
+  let n = 0;
+  let guard = 0;
+  while (cursor <= end && guard < 400) {
+    if (!workingOnly || !isNonWorkingDay(toKey(cursor), holidayMap)) n++;
+    cursor = addDays(cursor, 1);
+    guard++;
+  }
+  return n;
+}
+function computeCompDayBalance(memberId, schedules, holidayMap, excludeId) {
+  const r = { fullEarned: 0, fullUsed: 0, halfEarned: 0, halfUsed: 0 };
+  schedules.forEach((s) => {
+    if (s.memberId !== memberId || (excludeId && s.id === excludeId)) return;
+    if (s.type === "휴일근무") {
+      const n = countScheduleDays(s, holidayMap, false);
+      if (holidayWorkUnit(s) === "half") r.halfEarned += n;
+      else r.fullEarned += n;
+    } else if (s.type === "대체휴무(연차)") r.fullUsed += countScheduleDays(s, holidayMap, true);
+    else if (s.type === "대체휴무(반차)") r.halfUsed += countScheduleDays(s, holidayMap, true);
+  });
+  r.fullRemain = r.fullEarned - r.fullUsed;
+  r.halfRemain = r.halfEarned - r.halfUsed;
+  r.any = r.fullEarned + r.fullUsed + r.halfEarned + r.halfUsed > 0;
+  return r;
 }
 function leaveUsedFromMarks(marks, uptoDay) {
   let n = 0;
@@ -479,7 +527,7 @@ function leaveUsedFromMarks(marks, uptoDay) {
   });
   return n;
 }
-function monthNote(marks, holidayWorkDays) {
+function monthNote(marks, holidayWork) {
   const parts = [];
   const leave = leaveUsedFromMarks(marks);
   if (leave > 0) parts.push(`연차 ${fmtDays(leave)}개 사용`);
@@ -489,7 +537,12 @@ function monthNote(marks, holidayWorkDays) {
   if (gyeong) parts.push(`경조 ${gyeong}일`);
   const unpaid = marks.filter((m) => m === "★").length;
   if (unpaid) parts.push(`무급 ${unpaid}일`);
-  if (holidayWorkDays) parts.push(`휴일근무 ${holidayWorkDays}일`);
+  if (holidayWork && (holidayWork.full || holidayWork.half)) {
+    const hw = [];
+    if (holidayWork.full) hw.push(`연차 ${holidayWork.full}일`);
+    if (holidayWork.half) hw.push(`반차 ${holidayWork.half}회`);
+    parts.push(`휴일근무(${hw.join("·")})`);
+  }
   return parts.join(", ");
 }
 
@@ -708,7 +761,7 @@ function addMonthSheet(wb, { year, month, kind, rows, holidayMap, holidayWorkTot
   t.value = `${month}월 휴무 ${kind}(본사)`;
   styleCell(t, { size: 20, border: false });
   const dh = ws.getCell("AK3");
-  dh.value = `대휴발생 : ${holidayWorkTotal}개`;
+  dh.value = `대휴발생 : ${fmtDays(holidayWorkTotal)}개`;
   styleCell(dh, { size: 8, bold: true, color: "FFFF0000", border: false, align: { horizontal: "right", vertical: "middle" } });
 
   ws.mergeCells("A4:B5");
@@ -873,9 +926,9 @@ function addLeaveSheet(wb, { year, rows, basisText }) {
 function buildMonthRows(year, month, members, schedules, holidayMap, autoWeekend) {
   let holidayWorkTotal = 0;
   const rows = members.map((m) => {
-    const { marks, holidayWorkDays } = buildMonthMarks(year, month, m.id, schedules, holidayMap, autoWeekend);
+    const { marks, holidayWorkDays, holidayWork } = buildMonthMarks(year, month, m.id, schedules, holidayMap, autoWeekend);
     holidayWorkTotal += holidayWorkDays;
-    return { name: m.name, title: memberTitle(m), marks, note: monthNote(marks.filter((x) => x !== null), holidayWorkDays) };
+    return { name: m.name, title: memberTitle(m), marks, note: monthNote(marks.filter((x) => x !== null), holidayWork) };
   });
   return { rows, holidayWorkTotal };
 }
@@ -981,7 +1034,7 @@ function chipStyle(type, color) {
 }
 
 // 캘린더 배지에 표시할 짧은 이름 접미사. 저장되는 실제 type 값은 그대로 유지하고, 화면 표기만 축약한다.
-function typeLabel(type) {
+function typeLabel(type, schedule) {
   switch (type) {
     case "휴무":
       return "휴";
@@ -990,7 +1043,7 @@ function typeLabel(type) {
     case "대체휴무(반차)":
       return "대휴/반";
     case "휴일근무":
-      return "휴근";
+      return holidayWorkUnit(schedule) === "half" ? "휴근/반" : "휴근/연";
     case "경조휴무":
       return "경조";
     default:
@@ -1009,7 +1062,7 @@ function companyEventStyle(kind) {
 function ScheduleChip({ schedule, member, onClick }) {
   const color = MEMBER_COLORS[hashColorIndex(member?.id || "x")];
   const style = chipStyle(schedule.type, color);
-  const label = typeLabel(schedule.type);
+  const label = typeLabel(schedule.type, schedule);
   return (
     <div
       onClick={(e) => {
@@ -1166,7 +1219,7 @@ function BarChip({ item, members, laneHeight, onClick }) {
     const member = members.find((m) => m.id === s.memberId);
     const color = MEMBER_COLORS[hashColorIndex(member?.id || "x")];
     style = chipStyle(s.type, color);
-    content = `${member ? member.name : "(삭제된 팀원)"}(${typeLabel(s.type)})`;
+    content = `${member ? member.name : "(삭제된 팀원)"}(${typeLabel(s.type, s)})`;
     tooltip = s.note || "";
   } else {
     const ev = item.raw;
@@ -1438,7 +1491,7 @@ function FilterBar({ members, filterMembers, filterTypes, toggleMember, toggleTy
   );
 }
 
-function MemberManager({ members, onAdd, onUpdate, onDelete, leaveInfo, leaveYear }) {
+function MemberManager({ members, onAdd, onUpdate, onDelete, leaveInfo, leaveYear, compInfo }) {
   const [open, setOpen] = useState(true);
   const [name, setName] = useState("");
   const [total, setTotal] = useState(15);
@@ -1504,6 +1557,20 @@ function MemberManager({ members, onAdd, onUpdate, onDelete, leaveInfo, leaveYea
                       );
                     })()}
                   </span>
+                  {(() => {
+                    const c = compInfo && compInfo[m.id];
+                    if (!c || !c.any) return null;
+                    const neg = c.fullRemain < 0 || c.halfRemain < 0;
+                    const tip =
+                      `대휴 상계 (등록된 일정 전체 누적)` +
+                      `\n연차: 휴일근무 ${c.fullEarned}일 − 대휴/연 ${c.fullUsed}일 = ${c.fullRemain}일` +
+                      `\n반차: 휴일근무 ${c.halfEarned}회 − 대휴/반 ${c.halfUsed}회 = ${c.halfRemain}회`;
+                    return (
+                      <span title={tip} className="ml-auto mr-2 whitespace-nowrap" style={{ color: neg ? "#DC2626" : "#6B7280", fontWeight: neg ? 600 : 400 }}>
+                        대휴 연 {c.fullRemain}·반 {c.halfRemain}
+                      </span>
+                    );
+                  })()}
                   <span className="flex items-center gap-2">
                     <button onClick={() => startEdit(m)} className="p-1.5 -m-1.5"><Pencil size={12} color="#9CA3AF" /></button>
                     <button onClick={() => onDelete(m.id)} className="p-1.5 -m-1.5"><Trash2 size={12} color="#9CA3AF" /></button>
@@ -1811,7 +1878,7 @@ function RecurringEventManager({ recurringEvents, onAdd, onUpdate, onDelete }) {
   );
 }
 
-function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDate, defaultMemberId, onSaveSchedule, onDeleteSchedule, onSaveCompanyEvent, onDeleteCompanyEvent, onQuickAddMember, onAddRecurring }) {
+function ScheduleModal({ open, onClose, members, schedules = [], holidayMap = {}, initial, initialKind, defaultDate, defaultMemberId, onSaveSchedule, onDeleteSchedule, onSaveCompanyEvent, onDeleteCompanyEvent, onQuickAddMember, onAddRecurring }) {
   const [mode, setMode] = useState("personal"); // "personal" | "company"
   // shared date range (used by both modes)
   const [startDate, setStartDate] = useState("");
@@ -1819,6 +1886,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
   // personal schedule fields
   const [memberId, setMemberId] = useState("");
   const [type, setType] = useState("연차");
+  const [hwUnit, setHwUnit] = useState("full"); // 휴일근무 단위: full(연차) | half(반차)
   const [note, setNote] = useState("");
   const [quickName, setQuickName] = useState("");
   const [quickTotal, setQuickTotal] = useState(15);
@@ -1856,6 +1924,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       setStartDate(initial.startDate || initial.date);
       setEndDate(initial.endDate || initial.startDate || initial.date);
       setType(initial.type);
+      setHwUnit(holidayWorkUnit(initial));
       setNote(initial.note || "");
     } else {
       setMode("personal");
@@ -1864,6 +1933,7 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
       setStartDate(d);
       setEndDate(d);
       setType("연차");
+      setHwUnit("full");
       setNote("");
       setTitle("");
       setCompanyNote("");
@@ -1877,17 +1947,44 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
   if (!open) return null;
   const isEditing = !!initial;
 
+  // 대휴 상계 체크: 이 일정(수정 중이면 기존 값 제외)을 넣었을 때 남는 휴일근무
+  const isCompType = type === "대체휴무(연차)" || type === "대체휴무(반차)";
+  const compCheck = (() => {
+    if (mode !== "personal" || !memberId || !startDate || (!isCompType && type !== "휴일근무")) return null;
+    const excludeId = initial?.id && !isCopy && initialKind === "schedule" ? initial.id : null;
+    const bal = computeCompDayBalance(memberId, schedules, holidayMap, excludeId);
+    const end = endDate && endDate >= startDate ? endDate : startDate;
+    const draft = { startDate, endDate: end };
+    const isFull = type === "대체휴무(연차)" || (type === "휴일근무" && hwUnit === "full");
+    const earned = isFull ? bal.fullEarned : bal.halfEarned;
+    const used = isFull ? bal.fullUsed : bal.halfUsed;
+    const thisN = countScheduleDays(draft, holidayMap, isCompType);
+    const before = earned - used;
+    const after = isCompType ? before - thisN : before + thisN;
+    return { isFull, earned, used, before, thisN, after, unit: isFull ? "일" : "회", kind: isFull ? "연차" : "반차" };
+  })();
+
   const submitPersonal = () => {
     if (!memberId || !startDate) return;
+    if (isCompType && compCheck && compCheck.thisN > 0 && compCheck.after < 0) {
+      const ok = window.confirm(
+        `상계할 휴일근무(${compCheck.kind})가 부족해요.\n` +
+          `휴일근무(${compCheck.kind}) ${compCheck.earned}${compCheck.unit} − 대휴 사용 ${compCheck.used}${compCheck.unit} = 잔여 ${compCheck.before}${compCheck.unit}\n` +
+          `이번 ${typeLabel(type)} ${compCheck.thisN}${compCheck.unit} 등록 시 잔여 ${compCheck.after}${compCheck.unit}\n\n그래도 저장할까요?`
+      );
+      if (!ok) return;
+    }
     const end = endDate && endDate >= startDate ? endDate : startDate;
-    onSaveSchedule({
+    const data = {
       id: initial?.id && !isCopy ? initial.id : genId("sch"),
       memberId,
       startDate,
       endDate: end,
       type,
       note: note.trim(),
-    });
+    };
+    if (type === "휴일근무") data.holidayWorkUnit = hwUnit;
+    onSaveSchedule(data);
   };
   const submitCompany = () => {
     if (isRecurringMode) {
@@ -2005,6 +2102,39 @@ function ScheduleModal({ open, onClose, members, initial, initialKind, defaultDa
                   </button>
                 ))}
               </div>
+              {type === "휴일근무" && (
+                <div className="mt-2">
+                  <label className="text-xs font-semibold block mb-1" style={{ color: "#374151" }}>휴일근무 단위</label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {[["full", "연차 (1일 근무 → 대휴/연)"], ["half", "반차 (반일 근무 → 대휴/반)"]].map(([u, lbl]) => (
+                      <button
+                        key={u}
+                        onClick={() => setHwUnit(u)}
+                        className="text-xs font-medium py-1.5 rounded border"
+                        style={hwUnit === u ? { backgroundColor: ACCENT, borderColor: ACCENT, color: "#fff" } : { backgroundColor: "#fff", borderColor: "#E5E7EB", color: "#374151" }}
+                      >
+                        {lbl}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {compCheck && (
+                <div
+                  className="mt-2 text-xs rounded p-2 leading-relaxed"
+                  style={compCheck.after < 0 ? { backgroundColor: "#FEF2F2", color: "#B91C1C" } : { backgroundColor: "#F0FDFA", color: "#0F766E" }}
+                >
+                  <div className="font-semibold">대휴 상계 체크 · {compCheck.kind}</div>
+                  <div>
+                    휴일근무({compCheck.kind}) {compCheck.earned}{compCheck.unit} − 대휴/{compCheck.isFull ? "연" : "반"} 사용 {compCheck.used}{compCheck.unit} = 잔여 {compCheck.before}{compCheck.unit}
+                  </div>
+                  <div>
+                    이번 {isCompType ? "사용" : "발생"} {compCheck.thisN}{compCheck.unit} → 저장 후 잔여 <b>{compCheck.after}{compCheck.unit}</b>
+                    {isCompType && compCheck.thisN === 0 && " (주말·공휴일은 차감 안 함)"}
+                  </div>
+                  {compCheck.after < 0 && <div className="font-semibold mt-0.5">상계할 휴일근무({compCheck.kind})가 부족해요</div>}
+                </div>
+              )}
             </div>
 
             <div>
@@ -2527,7 +2657,7 @@ function ExcelExportModal({ open, onClose, members, schedules, holidayMap, defau
             <input type="checkbox" checked={autoWeekend} onChange={(e) => setAutoWeekend(e.target.checked)} className="mt-0.5" />
             <span>주말·공휴일은 자동으로 ●(휴무) 표시 <span style={{ color: "#9CA3AF" }}>— '휴일근무'로 등록한 날은 빈칸(근무)으로 남겨요</span></span>
           </label>
-          <p style={{ color: "#9CA3AF" }}>표시 기준: 휴무·대체휴무(연차) ●, 연차, 반차, 대체휴무(반차) ◐, 경조휴무 경조, 무급 ★. 외부/내부일정은 넣지 않아요.</p>
+          <p style={{ color: "#9CA3AF" }}>표시 기준: 휴무·대체휴무(연차) ●, 연차, 반차, 대체휴무(반차) ◐, 경조휴무 경조, 무급 ★. 외부/내부일정은 넣지 않아요. 대휴발생은 휴일근무 연차 1·반차 0.5로 합산해요.</p>
         </div>
         <div className="flex items-center justify-end gap-2 mt-5">
           <button onClick={onClose} className="text-xs font-semibold px-3 py-2 rounded border" style={{ borderColor: "#E5E7EB", color: "#374151" }}>취소</button>
@@ -2844,6 +2974,15 @@ function App() {
     return info;
   }, [members, schedules, holidayMap, leaveYear]);
 
+  // 팀원별 대휴 상계 잔여: 휴일근무(연차)↔대휴/연, 휴일근무(반차)↔대휴/반
+  const compInfo = useMemo(() => {
+    const info = {};
+    members.forEach((m) => {
+      info[m.id] = computeCompDayBalance(m.id, schedules, holidayMap, null);
+    });
+    return info;
+  }, [members, schedules, holidayMap]);
+
   const recurringEventMap = useMemo(() => {
     const map = {};
     const today = new Date();
@@ -3082,7 +3221,7 @@ function App() {
       const end = parseKey(endKey);
       let guard = 0;
       while (cursor <= end && guard < 60) {
-        scheduleRows.push([toKey(cursor), WEEKDAYS[cursor.getDay()], m ? m.name : "(삭제됨)", s.type, (s.note || "").replace(/\r?\n/g, " ")]);
+        scheduleRows.push([toKey(cursor), WEEKDAYS[cursor.getDay()], m ? m.name : "(삭제됨)", scheduleTypeName(s), (s.note || "").replace(/\r?\n/g, " ")]);
         cursor = addDays(cursor, 1);
         guard++;
       }
@@ -3484,7 +3623,7 @@ function App() {
             </div>
           </div>
           <div className="lg:col-span-1 space-y-4">
-            <MemberManager members={members} onAdd={addMember} onUpdate={updateMember} onDelete={deleteMember} leaveInfo={leaveInfo} leaveYear={leaveYear} />
+            <MemberManager members={members} onAdd={addMember} onUpdate={updateMember} onDelete={deleteMember} leaveInfo={leaveInfo} leaveYear={leaveYear} compInfo={compInfo} />
             <HolidayManager holidays={holidays} onAdd={addHoliday} onDelete={deleteHoliday} />
             <RecurringEventManager recurringEvents={recurringEvents} onAdd={addRecurringEvent} onUpdate={updateRecurringEvent} onDelete={deleteRecurringEvent} />
           </div>
@@ -3495,6 +3634,8 @@ function App() {
         open={modalOpen}
         onClose={closeModal}
         members={members}
+        schedules={schedules}
+        holidayMap={holidayMap}
         initial={editingItem}
         initialKind={editingKind}
         defaultDate={modalDefaultDate}
